@@ -1,66 +1,26 @@
+"use strict";
 /**
  * Poker Circuit Definitions for Groth16 SNARK
- * 
+ *
  * This module defines the specific circuits needed to verify fair poker
  * card dealing using zero-knowledge proofs.
  */
-
-import { buildPoseidon } from 'circomlibjs';
-import { sha256 } from '@noble/hashes/sha256';
-
-export interface PokerCircuitConfig {
-    name: string;
-    description: string;
-    nInputs: number;
-    nOutputs: number;
-    constraints: CircuitConstraint[];
-    witnessGenerator: WitnessGenerator;
-}
-
-export interface CircuitConstraint {
-    type: 'equality' | 'permutation' | 'commitment' | 'range' | 'custom';
-    description: string;
-    validate: (witness: any) => boolean;
-}
-
-export interface WitnessGenerator {
-    generate: (inputs: PokerCircuitInputs) => Promise<CircuitWitness>;
-}
-
-export interface PokerCircuitInputs {
-    publicInputs?: { [key: string]: any };
-    privateInputs?: { [key: string]: any };
-    metadata?: any;
-}
-
-export interface CircuitWitness {
-    signals: { [key: string]: any };
-    commitments: { [key: string]: string };
-    proofs?: { [key: string]: any };
-}
-
-export interface CardData {
-    suit: number; // 0-3 (hearts, diamonds, clubs, spades)
-    rank: number; // 2-14 (2-10, J=11, Q=12, K=13, A=14)
-    hash: string; // Poseidon hash of card
-}
-
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.PokerCircuitBuilder = void 0;
+const circomlibjs_1 = require("circomlibjs");
 /**
  * Poker Circuit Builder
  */
-export class PokerCircuitBuilder {
-    private poseidon: any;
-    private circuits: Map<string, PokerCircuitConfig> = new Map();
-
+class PokerCircuitBuilder {
     constructor() {
-        this.poseidon = buildPoseidon();
+        this.circuits = new Map();
+        this.poseidon = (0, circomlibjs_1.buildPoseidon)();
         this.initializeCircuits();
     }
-
     /**
      * Initialize all poker circuits
      */
-    private initializeCircuits(): void {
+    initializeCircuits() {
         this.registerCircuit(this.createDeckGenerationCircuit());
         this.registerCircuit(this.createCardShuffleCircuit());
         this.registerCircuit(this.createCardDealingCircuit());
@@ -69,20 +29,18 @@ export class PokerCircuitBuilder {
         this.registerCircuit(this.createRoundDealingCircuit());
         this.registerCircuit(this.createHandVerificationCircuit());
     }
-
     /**
      * Register a circuit configuration
      */
-    private registerCircuit(circuit: PokerCircuitConfig): void {
+    registerCircuit(circuit) {
         this.circuits.set(circuit.name, circuit);
     }
-
     /**
      * Deck Generation Circuit
-     * 
+     *
      * Verifies that a fresh 52-card deck was generated correctly
      */
-    private createDeckGenerationCircuit(): PokerCircuitConfig {
+    createDeckGenerationCircuit() {
         return {
             name: 'deckGeneration',
             description: 'Verify proper generation of a 52-card deck',
@@ -96,7 +54,8 @@ export class PokerCircuitBuilder {
                         for (const signal of Object.keys(witness.signals)) {
                             if (signal.startsWith('suit_')) {
                                 const suit = witness.signals[signal];
-                                if (suit < 0 || suit > 3) return false;
+                                if (suit < 0 || suit > 3)
+                                    return false;
                             }
                         }
                         return true;
@@ -109,7 +68,8 @@ export class PokerCircuitBuilder {
                         for (const signal of Object.keys(witness.signals)) {
                             if (signal.startsWith('rank_')) {
                                 const rank = witness.signals[signal];
-                                if (rank < 2 || rank > 14) return false;
+                                if (rank < 2 || rank > 14)
+                                    return false;
                             }
                         }
                         return true;
@@ -124,19 +84,18 @@ export class PokerCircuitBuilder {
                 }
             ],
             witnessGenerator: {
-                generate: async (inputs: PokerCircuitInputs) => {
+                generate: async (inputs) => {
                     return this.generateDeckGenerationWitness(inputs);
                 }
             }
         };
     }
-
     /**
      * Card Shuffle Circuit
-     * 
+     *
      * Verifies that a deck was properly shuffled using a valid permutation
      */
-    private createCardShuffleCircuit(): PokerCircuitConfig {
+    createCardShuffleCircuit() {
         return {
             name: 'cardShuffle',
             description: 'Verify fair shuffling of card deck',
@@ -159,20 +118,19 @@ export class PokerCircuitBuilder {
                 }
             ],
             witnessGenerator: {
-                generate: async (inputs: PokerCircuitInputs) => {
+                generate: async (inputs) => {
                     return this.generateShuffleWitness(inputs);
                 }
             }
         };
     }
-
     /**
      * Card Dealing Circuit
-     * 
+     *
      * Verifies that cards were dealt from the correct positions
      * in the shuffled deck following poker rules
      */
-    private createCardDealingCircuit(): PokerCircuitConfig {
+    createCardDealingCircuit() {
         return {
             name: 'cardDealing',
             description: 'Verify proper dealing of cards to players',
@@ -184,7 +142,7 @@ export class PokerCircuitBuilder {
                     description: 'Dealing positions are within deck bounds',
                     validate: (witness) => {
                         const positions = witness.signals.dealPositions || [];
-                        return positions.every((pos: number) => pos >= 0 && pos < 52);
+                        return positions.every((pos) => pos >= 0 && pos < 52);
                     }
                 },
                 {
@@ -196,19 +154,18 @@ export class PokerCircuitBuilder {
                 }
             ],
             witnessGenerator: {
-                generate: async (inputs: PokerCircuitInputs) => {
+                generate: async (inputs) => {
                     return this.generateDealingWitness(inputs);
                 }
             }
         };
     }
-
     /**
      * Card Commitment Circuit
-     * 
+     *
      * Creates commitments to cards without revealing their values
      */
-    private createCardCommitmentCircuit(): PokerCircuitConfig {
+    createCardCommitmentCircuit() {
         return {
             name: 'cardCommitment',
             description: 'Create commitment to card without revealing it',
@@ -224,19 +181,18 @@ export class PokerCircuitBuilder {
                 }
             ],
             witnessGenerator: {
-                generate: async (inputs: PokerCircuitInputs) => {
+                generate: async (inputs) => {
                     return this.generateCardCommitmentWitness(inputs);
                 }
             }
         };
     }
-
     /**
      * Player Deal Circuit
-     * 
+     *
      * Verifies that specific cards were dealt to specific players
      */
-    private createPlayerDealCircuit(): PokerCircuitConfig {
+    createPlayerDealCircuit() {
         return {
             name: 'playerDeal',
             description: 'Verify cards dealt to specific players',
@@ -252,19 +208,18 @@ export class PokerCircuitBuilder {
                 }
             ],
             witnessGenerator: {
-                generate: async (inputs: PokerCircuitInputs) => {
+                generate: async (inputs) => {
                     return this.generatePlayerDealWitness(inputs);
                 }
             }
         };
     }
-
     /**
      * Round Dealing Circuit
-     * 
+     *
      * Verifies dealing for an entire round (flop, turn, river)
      */
-    private createRoundDealingCircuit(): PokerCircuitConfig {
+    createRoundDealingCircuit() {
         return {
             name: 'roundDealing',
             description: 'Verify dealing for betting rounds',
@@ -280,19 +235,18 @@ export class PokerCircuitBuilder {
                 }
             ],
             witnessGenerator: {
-                generate: async (inputs: PokerCircuitInputs) => {
+                generate: async (inputs) => {
                     return this.generateRoundDealingWitness(inputs);
                 }
             }
         };
     }
-
     /**
      * Hand Verification Circuit
-     * 
+     *
      * Verifies hand strength calculation without revealing cards
      */
-    private createHandVerificationCircuit(): PokerCircuitConfig {
+    createHandVerificationCircuit() {
         return {
             name: 'handVerification',
             description: 'Verify hand strength calculation',
@@ -309,37 +263,31 @@ export class PokerCircuitBuilder {
                 }
             ],
             witnessGenerator: {
-                generate: async (inputs: PokerCircuitInputs) => {
+                generate: async (inputs) => {
                     return this.generateHandVerificationWitness(inputs);
                 }
             }
         };
     }
-
     /**
      * Generate witness for deck generation
      */
-    private async generateDeckGenerationWitness(inputs: PokerCircuitInputs): Promise<CircuitWitness> {
+    async generateDeckGenerationWitness(inputs) {
         const { publicInputs, privateInputs, metadata } = inputs;
         const seed = metadata?.seed || this.generateRandomSeed();
-        
         // Generate fresh deck
         const deck = this.generateFreshDeck(seed);
-        const signals: { [key: string]: any } = {};
-        const commitments: { [key: string]: string } = {};
-
+        const signals = {};
+        const commitments = {};
         // Create signals for each card
         for (let i = 0; i < 52; i++) {
             const suit = Math.floor(deck[i] / 13);
             const rank = (deck[i] % 13) + 2;
-            
             signals[`suit_${i}`] = suit;
             signals[`rank_${i}`] = rank;
-            
             // Create commitment for each card
             commitments[`card_${i}`] = this.poseidon([suit, rank, seed, i]);
         }
-
         return {
             signals,
             commitments,
@@ -349,71 +297,60 @@ export class PokerCircuitBuilder {
             }
         };
     }
-
     /**
      * Generate witness for card shuffling
      */
-    private async generateShuffleWitness(inputs: PokerCircuitInputs): Promise<CircuitWitness> {
+    async generateShuffleWitness(inputs) {
         const { publicInputs, privateInputs } = inputs;
         const { originalDeck, shuffledDeck, permutation } = privateInputs;
-
-        const signals: { [key: string]: any } = {
+        const signals = {
             permutation,
             intermediateStates: this.calculateIntermediateStates(originalDeck, permutation)
         };
-
-        const commitments: { [key: string]: string } = {};
+        const commitments = {};
         for (let i = 0; i < 52; i++) {
             commitments[`shuffled_${i}`] = this.poseidon([
-                shuffledDeck[i], 
+                shuffledDeck[i],
                 permutation[i],
                 i
             ]);
         }
-
         return {
             signals,
             commitments
         };
     }
-
     /**
      * Generate witness for card dealing
      */
-    private async generateDealingWitness(inputs: PokerCircuitInputs): Promise<CircuitWitness> {
+    async generateDealingWitness(inputs) {
         const { publicInputs, privateInputs } = inputs;
         const { shuffledDeck, dealPositions, players } = privateInputs;
-
-        const signals: { [key: string]: any } = {
+        const signals = {
             dealPositions,
             players
         };
-
-        const commitments: { [key: string]: string } = {};
-        dealPositions.forEach((pos: number, index: number) => {
+        const commitments = {};
+        dealPositions.forEach((pos, index) => {
             const card = shuffledDeck[pos];
             commitments[`dealt_${index}`] = this.poseidon([card, pos, index]);
         });
-
         return {
             signals,
             commitments
         };
     }
-
     /**
      * Generate witness for card commitment
      */
-    private async generateCardCommitmentWitness(inputs: PokerCircuitInputs): Promise<CircuitWitness> {
+    async generateCardCommitmentWitness(inputs) {
         const { publicInputs, privateInputs } = inputs;
         const { card, nonce } = privateInputs;
-
-        const signals: { [key: string]: any } = {
+        const signals = {
             card,
             nonce,
             commitment: this.poseidon([card, nonce])
         };
-
         return {
             signals,
             commitments: {
@@ -421,19 +358,16 @@ export class PokerCircuitBuilder {
             }
         };
     }
-
     /**
      * Generate witness for player deal verification
      */
-    private async generatePlayerDealWitness(inputs: PokerCircuitInputs): Promise<CircuitWitness> {
+    async generatePlayerDealWitness(inputs) {
         const { publicInputs, privateInputs } = inputs;
         const { playerCards, expectedCards } = privateInputs;
-
-        const signals: { [key: string]: any } = {
+        const signals = {
             playerCards,
             expectedCards
         };
-
         return {
             signals,
             commitments: {
@@ -441,46 +375,38 @@ export class PokerCircuitBuilder {
             }
         };
     }
-
     /**
      * Generate witness for round dealing verification
      */
-    private async generateRoundDealingWitness(inputs: PokerCircuitInputs): Promise<CircuitWitness> {
+    async generateRoundDealingWitness(inputs) {
         const { publicInputs, privateInputs } = inputs;
         const { communityCards, dealOrder } = privateInputs;
-
-        const signals: { [key: string]: any } = {
+        const signals = {
             communityCards,
             dealOrder
         };
-
-        const commitments: { [key: string]: string } = {};
-        communityCards.forEach((card: any, index: number) => {
+        const commitments = {};
+        communityCards.forEach((card, index) => {
             commitments[`community_${index}`] = this.poseidon([card, index]);
         });
-
         return {
             signals,
             commitments
         };
     }
-
     /**
      * Generate witness for hand verification
      */
-    private async generateHandVerificationWitness(inputs: PokerCircuitInputs): Promise<CircuitWitness> {
+    async generateHandVerificationWitness(inputs) {
         const { publicInputs, privateInputs } = inputs;
         const { holeCards, communityCards } = privateInputs;
-        
         const allCards = [...holeCards, ...communityCards];
         const handStrength = this.calculateHandStrength(allCards);
-
-        const signals: { [key: string]: any } = {
+        const signals = {
             handStrength,
             holeCards,
             communityCards
         };
-
         return {
             signals,
             commitments: {
@@ -488,161 +414,141 @@ export class PokerCircuitBuilder {
             }
         };
     }
-
     // Helper methods
-
     /**
      * Validate deck uniqueness
      */
-    private validateDeckUniqueness(signals: { [key: string]: any }): boolean {
-        const cards = new Set<number>();
-        
+    validateDeckUniqueness(signals) {
+        const cards = new Set();
         for (let i = 0; i < 52; i++) {
             const suit = signals[`suit_${i}`];
             const rank = signals[`rank_${i}`];
             const card = suit * 13 + (rank - 2);
-            
-            if (cards.has(card)) return false;
+            if (cards.has(card))
+                return false;
             cards.add(card);
         }
-        
         return cards.size === 52;
     }
-
     /**
      * Validate permutation
      */
-    private validatePermutation(permutation: number[]): boolean {
-        if (permutation.length !== 52) return false;
-        
-        const seen = new Set<number>();
+    validatePermutation(permutation) {
+        if (permutation.length !== 52)
+            return false;
+        const seen = new Set();
         for (const p of permutation) {
-            if (p < 0 || p >= 52 || seen.has(p)) return false;
+            if (p < 0 || p >= 52 || seen.has(p))
+                return false;
             seen.add(p);
         }
-        
         return seen.size === 52;
     }
-
     /**
      * Validate shuffle commitments
      */
-    private validateShuffleCommitments(witness: CircuitWitness): boolean {
+    validateShuffleCommitments(witness) {
         // Verify that shuffle commitments are properly computed
         return true; // Simplified for demo
     }
-
     /**
      * Validate dealt cards
      */
-    private validateDealtCards(witness: CircuitWitness): boolean {
+    validateDealtCards(witness) {
         // Verify that dealt cards match deck positions
         return true; // Simplified for demo
     }
-
     /**
      * Validate card commitment
      */
-    private validateCardCommitment(witness: CircuitWitness): boolean {
+    validateCardCommitment(witness) {
         const { signals } = witness;
         const expectedCommitment = this.poseidon([signals.card, signals.nonce]);
         return signals.commitment === expectedCommitment;
     }
-
     /**
      * Validate player dealing
      */
-    private validatePlayerDealing(witness: CircuitWitness): boolean {
+    validatePlayerDealing(witness) {
         // Verify that player receives correct cards
         return true; // Simplified for demo
     }
-
     /**
      * Validate community cards
      */
-    private validateCommunityCards(witness: CircuitWitness): boolean {
+    validateCommunityCards(witness) {
         // Verify community cards are from correct positions
         return true; // Simplified for demo
     }
-
     /**
      * Calculate intermediate states during shuffle
      */
-    private calculateIntermediateStates(deck: number[], permutation: number[]): number[][] {
-        const states: number[][] = [];
+    calculateIntermediateStates(deck, permutation) {
+        const states = [];
         // Simplified: just return original deck
         return [deck];
     }
-
     /**
      * Generate fresh deck
      */
-    private generateFreshDeck(seed: string): number[] {
+    generateFreshDeck(seed) {
         const deck = Array.from({ length: 52 }, (_, i) => i);
         return this.shuffleArray(deck, seed);
     }
-
     /**
      * Shuffle array with seed
      */
-    private shuffleArray<T>(array: T[], seed: string): T[] {
+    shuffleArray(array, seed) {
         const result = [...array];
         const random = this.seededRandom(seed);
-        
         for (let i = result.length - 1; i > 0; i--) {
             const j = Math.floor(random() * (i + 1));
             [result[i], result[j]] = [result[j], result[i]];
         }
-        
         return result;
     }
-
     /**
      * Generate seeded random number
      */
-    private seededRandom(seed: string): () => number {
+    seededRandom(seed) {
         let hash = 0;
         for (let i = 0; i < seed.length; i++) {
             const char = seed.charCodeAt(i);
             hash = ((hash << 5) - hash) + char;
             hash = hash & hash;
         }
-        
         return () => {
             hash = (hash * 1664525 + 1013904223) % 4294967296;
             return hash / 4294967296;
         };
     }
-
     /**
      * Generate random seed
      */
-    private generateRandomSeed(): string {
+    generateRandomSeed() {
         return `seed-${Date.now()}-${Math.random()}`;
     }
-
     /**
      * Calculate hand strength (simplified)
      */
-    private calculateHandStrength(cards: number[]): number {
+    calculateHandStrength(cards) {
         // Simplified hand strength calculation
         // In reality, this would evaluate poker hands
         return Math.floor(Math.random() * 7463); // 0-7462 range
     }
-
     /**
      * Get all registered circuits
      */
-    getCircuits(): Map<string, PokerCircuitConfig> {
+    getCircuits() {
         return this.circuits;
     }
-
     /**
      * Get specific circuit
      */
-    getCircuit(name: string): PokerCircuitConfig | undefined {
+    getCircuit(name) {
         return this.circuits.get(name);
     }
 }
-
-export default PokerCircuitBuilder;
+exports.PokerCircuitBuilder = PokerCircuitBuilder;
+exports.default = PokerCircuitBuilder;
+//# sourceMappingURL=pokerCircuits.js.map
