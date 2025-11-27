@@ -4,7 +4,7 @@
  * Indian Poker WebSocket Server
  * A comprehensive server for traditional Indian card games
  * Supports Teen Patti, Jhandi Munda, and other authentic Indian poker variants
- * 
+ *
  * Features:
  * - Real-time multiplayer WebSocket communication
  * - Authentic Indian poker rules and hand rankings
@@ -16,6 +16,9 @@
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
 const crypto = require('crypto');
+
+// Import SNARK integration module
+const { snarkVerifier, cardToIndex, calculatePermutation, deckToIndices } = require('./snark-integration');
 
 // Game Constants
 const CARD_SUITS = ['Hearts', 'Diamonds', 'Clubs', 'Spades'];
@@ -39,7 +42,7 @@ const TEEN_PATTI_HAND_RANKINGS = {
 // Traditional Indian Betting Terms
 const BETTING_TERMS = {
     CHAAL: 'chaal',      // Call/raise
-    PACK: 'pack',        // Fold  
+    PACK: 'pack',        // Fold
     SHOW: 'show',        // Show cards
     BOOT: 'boot',        // Forced bet
     POT: 'pot'           // Pot/amount
@@ -70,10 +73,15 @@ class Card {
 
 /**
  * Deck management for Indian Poker
+ * Enhanced with SNARK proof tracking for verifiable shuffling
  */
 class Deck {
     constructor() {
         this.cards = [];
+        this.originalDeck = []; // Store original deck for proof generation
+        this.shuffledDeck = []; // Store shuffled deck for proof generation
+        this.permutation = []; // Store permutation for proof generation
+        this.dealPositions = []; // Track which positions cards were dealt from
         this.initializeDeck();
         this.shuffle();
     }
@@ -85,28 +93,58 @@ class Deck {
                 this.cards.push(new Card(rank, suit));
             }
         }
+        // Store original deck order for SNARK proofs
+        this.originalDeck = this.cards.map(card => ({ rank: card.rank, suit: card.suit }));
     }
 
     shuffle() {
-        const shuffled = [];
-        while (this.cards.length > 0) {
-            const randomIndex = Math.floor(Math.random() * this.cards.length);
-            shuffled.push(this.cards.splice(randomIndex, 1)[0]);
+        // Store original order before shuffling
+        const originalOrder = [...this.cards];
+
+        // Fisher-Yates shuffle with permutation tracking
+        const shuffled = [...this.cards];
+        const permutation = Array.from({ length: shuffled.length }, (_, i) => i);
+
+        for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            // Swap cards
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+            // Track permutation
+            [permutation[i], permutation[j]] = [permutation[j], permutation[i]];
         }
+
         this.cards = shuffled;
+        this.shuffledDeck = shuffled.map(card => ({ rank: card.rank, suit: card.suit }));
+        this.permutation = permutation;
+        this.dealPositions = []; // Reset deal positions
     }
 
     dealCard() {
+        const position = 52 - this.cards.length; // Track position in original shuffled deck
+        this.dealPositions.push(position);
         return this.cards.pop();
     }
 
     cardsRemaining() {
         return this.cards.length;
     }
+
+    /**
+     * Get deck state for SNARK proof generation
+     */
+    getProofState() {
+        return {
+            originalDeck: this.originalDeck,
+            shuffledDeck: this.shuffledDeck,
+            permutation: this.permutation,
+            dealPositions: this.dealPositions
+        };
+    }
 }
 
 /**
  * Teen Patti Game Logic
+ * Enhanced with SNARK proof tracking for verifiable fairness
  */
 class TeenPattiGame {
     constructor(roomId) {
@@ -121,13 +159,22 @@ class TeenPattiGame {
         this.bigBlind = 1;
         this.currentBet = this.bootAmount;
         this.dealer = null;
+
+        // SNARK proof tracking
+        this.gameId = `${roomId}-${Date.now()}`; // Unique game identifier
+        this.proofs = {
+            shuffle: null,
+            dealing: null,
+            commitments: {}
+        };
+        this.snarkEnabled = false; // Will be set when proofs are generated
     }
 
     evaluateHand(cards) {
         const sortedCards = cards.sort((a, b) => b.getNumericValue() - a.getNumericValue());
-        
+
         // Check for Trail (Three of a kind)
-        if (sortedCards[0].rank === sortedCards[1].rank && 
+        if (sortedCards[0].rank === sortedCards[1].rank &&
             sortedCards[1].rank === sortedCards[2].rank) {
             return {
                 type: 'trail',
@@ -202,12 +249,12 @@ class TeenPattiGame {
 
     isSequence(cards) {
         const values = cards.map(card => card.getNumericValue()).sort((a, b) => b - a);
-        
+
         // Check for A, 2, 3 (lowest sequence)
         if (values[0] === 14 && values[1] === 3 && values[2] === 2) {
             return true;
         }
-        
+
         // Check for normal sequences
         return (values[0] - values[1] === 1) && (values[1] - values[2] === 1);
     }
@@ -278,7 +325,7 @@ class TeenPattiGame {
 
         const winner = sortedPlayers[0];
         winner.chips += this.pot;
-        
+
         return {
             winner: winner,
             handValue: winner.handValue,
@@ -308,7 +355,25 @@ class TeenPattiGame {
                 isActive: p.isActive,
                 joinedAt: p.joinedAt
                 // Cards are not sent to other players
-            }))
+            })),
+            // SNARK verification info
+            snarkEnabled: this.snarkEnabled,
+            gameId: this.gameId,
+            hasProofs: {
+                shuffle: this.proofs.shuffle !== null,
+                dealing: this.proofs.dealing !== null
+            }
+        };
+    }
+
+    /**
+     * Get proofs for verification (can be requested by clients)
+     */
+    getProofs() {
+        return {
+            gameId: this.gameId,
+            snarkEnabled: this.snarkEnabled,
+            proofs: this.proofs
         };
     }
 }
@@ -368,11 +433,11 @@ class JhandiMundaGame {
 
         for (const [playerId, player] of this.players) {
             if (player.hasFolded || !player.prediction) continue;
-            
+
             const multiplier = this.calculateWinMultiplier(player.prediction, actualResults);
             const winAmount = player.bet * multiplier;
             player.chips += winAmount;
-            
+
             results.push({
                 playerId: playerId,
                 playerName: player.name,
@@ -479,12 +544,12 @@ class IndianPokerRoomManager {
 
         room.players.delete(playerId);
         room.game.removePlayer(playerId);
-        
+
         // Delete room if empty
         if (room.players.size === 0) {
             this.rooms.delete(roomId);
         }
-        
+
         return true;
     }
 
@@ -520,10 +585,26 @@ class IndianPokerServer {
         this.clients = new Map(); // clientId -> { ws, playerId, roomId }
         this.roomManager = new IndianPokerRoomManager();
         this.setupWebSocketHandlers();
-        
+
+        // Initialize SNARK system asynchronously
+        this.initializeSNARK();
+
         console.log('Indian Poker Server started on port ' + port);
         console.log('Supporting: Teen Patti, Jhandi Munda, and other Indian variants');
         console.log('WebSocket endpoint: ws://localhost:' + port);
+    }
+
+    async initializeSNARK() {
+        try {
+            await snarkVerifier.initialize();
+            if (snarkVerifier.isAvailable()) {
+                console.log('SNARK proof system initialized - verifiable fairness enabled');
+            } else {
+                console.log('SNARK proof system not available - running without verifiable fairness');
+            }
+        } catch (error) {
+            console.warn('Failed to initialize SNARK system:', error.message);
+        }
     }
 
     setupWebSocketHandlers() {
@@ -601,6 +682,15 @@ class IndianPokerServer {
                 case 'get_game_state':
                     this.handleGetGameState(clientId);
                     break;
+                case 'get_proofs':
+                    this.handleGetProofs(clientId);
+                    break;
+                case 'verify_proof':
+                    this.handleVerifyProof(clientId, messageData);
+                    break;
+                case 'get_snark_status':
+                    this.handleGetSnarkStatus(clientId);
+                    break;
                 default:
                     this.sendError(clientId, `Unknown message type: ${type}`);
             }
@@ -613,7 +703,7 @@ class IndianPokerServer {
     handleCreateRoom(clientId, data) {
         const { variant, roomName } = data;
         const room = this.roomManager.createRoom(variant, roomName);
-        
+
         this.sendMessage(clientId, {
             type: 'room_created',
             data: {
@@ -698,7 +788,7 @@ class IndianPokerServer {
         if (!client || !client.roomId) return;
 
         this.roomManager.leaveRoom(client.roomId, clientId);
-        
+
         this.broadcastToRoom(client.roomId, clientId, {
             type: 'player_left',
             data: { playerId: clientId }
@@ -745,21 +835,114 @@ class IndianPokerServer {
         }
     }
 
-    startTeenPattiGame(room) {
+    async startTeenPattiGame(room) {
         room.game.currentRound = 'dealing';
+        
+        // Store deck state before dealing for SNARK proofs
+        const deckStateBefore = room.game.deck.getProofState();
+        
+        // Deal cards
         room.game.dealCards();
         room.game.currentRound = 'betting';
         room.game.currentBet = room.game.bootAmount;
+
+        // Get deck state after dealing
+        const deckStateAfter = room.game.deck.getProofState();
+
+        // Generate SNARK proofs asynchronously (non-blocking)
+        this.generateGameProofs(room, deckStateBefore, deckStateAfter);
 
         this.broadcastToRoom(room.id, null, {
             type: 'game_started',
             data: {
                 gameState: room.game.getGameState(),
-                message: '🎮 Teen Patti game started! Cards dealt.'
+                message: '🎮 Teen Patti game started! Cards dealt.',
+                snarkStatus: snarkVerifier.isAvailable() ? 'generating' : 'unavailable'
             }
         });
 
         console.log(`🎯 Teen Patti game started in room ${room.id}`);
+    }
+
+    /**
+     * Generate SNARK proofs for a game (runs asynchronously)
+     */
+    async generateGameProofs(room, deckStateBefore, deckStateAfter) {
+        if (!snarkVerifier.isAvailable()) {
+            console.log(`SNARK proofs not available for room ${room.id}`);
+            return;
+        }
+
+        const game = room.game;
+        const gameId = game.gameId;
+
+        try {
+            console.log(`Generating SNARK proofs for game ${gameId}...`);
+
+            // Convert deck to numeric indices for SNARK
+            const originalDeckIndices = deckStateBefore.originalDeck.map(card => {
+                const suitOrder = ['Hearts', 'Diamonds', 'Clubs', 'Spades'];
+                const rankOrder = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+                return suitOrder.indexOf(card.suit) * 13 + rankOrder.indexOf(card.rank);
+            });
+
+            const shuffledDeckIndices = deckStateBefore.shuffledDeck.map(card => {
+                const suitOrder = ['Hearts', 'Diamonds', 'Clubs', 'Spades'];
+                const rankOrder = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+                return suitOrder.indexOf(card.suit) * 13 + rankOrder.indexOf(card.rank);
+            });
+
+            // Generate shuffle proof
+            const shuffleResult = await snarkVerifier.generateShuffleProof(
+                gameId,
+                originalDeckIndices,
+                shuffledDeckIndices,
+                deckStateBefore.permutation
+            );
+
+            if (shuffleResult.success) {
+                game.proofs.shuffle = shuffleResult.proof;
+                console.log(`Shuffle proof generated for game ${gameId} in ${shuffleResult.processingTime}ms`);
+            } else {
+                console.warn(`Shuffle proof generation failed: ${shuffleResult.error}`);
+            }
+
+            // Generate dealing proof
+            const dealPositions = deckStateAfter.dealPositions;
+            const dealingResult = await snarkVerifier.generateDealingProof(
+                gameId,
+                shuffledDeckIndices,
+                dealPositions
+            );
+
+            if (dealingResult.success) {
+                game.proofs.dealing = dealingResult.proof;
+                console.log(`Dealing proof generated for game ${gameId} in ${dealingResult.processingTime}ms`);
+            } else {
+                console.warn(`Dealing proof generation failed: ${dealingResult.error}`);
+            }
+
+            // Mark SNARK as enabled if at least one proof was generated
+            game.snarkEnabled = game.proofs.shuffle !== null || game.proofs.dealing !== null;
+
+            // Notify clients that proofs are ready
+            if (game.snarkEnabled) {
+                this.broadcastToRoom(room.id, null, {
+                    type: 'proofs_ready',
+                    data: {
+                        gameId: gameId,
+                        hasProofs: {
+                            shuffle: game.proofs.shuffle !== null,
+                            dealing: game.proofs.dealing !== null
+                        },
+                        message: 'SNARK proofs generated for verifiable fairness'
+                    }
+                });
+            }
+
+        } catch (error) {
+            console.error(`Error generating SNARK proofs for game ${gameId}:`, error.message);
+        }
     }
 
     startJhandiMundaGame(room) {
@@ -863,7 +1046,7 @@ class IndianPokerServer {
 
     endTeenPattiGame(room) {
         const result = room.game.processBettingRound();
-        
+
         this.broadcastToRoom(room.id, null, {
             type: 'game_ended',
             data: {
@@ -917,13 +1100,99 @@ class IndianPokerServer {
         });
     }
 
+    /**
+     * Handle request for SNARK proofs
+     */
+    handleGetProofs(clientId) {
+        const client = this.clients.get(clientId);
+        if (!client || !client.roomId) {
+            this.sendError(clientId, 'Not in a room');
+            return;
+        }
+
+        const room = this.roomManager.getRoom(client.roomId);
+        if (!room) {
+            this.sendError(clientId, 'Room not found');
+            return;
+        }
+
+        // Only Teen Patti games have SNARK proofs
+        if (room.variant !== GAME_VARIANTS.TEEN_PATTI) {
+            this.sendError(clientId, 'SNARK proofs only available for Teen Patti');
+            return;
+        }
+
+        const proofs = room.game.getProofs();
+        this.sendMessage(clientId, {
+            type: 'proofs',
+            data: proofs
+        });
+    }
+
+    /**
+     * Handle request to verify a specific proof
+     */
+    async handleVerifyProof(clientId, data) {
+        if (!snarkVerifier.isAvailable()) {
+            this.sendMessage(clientId, {
+                type: 'proof_verification',
+                data: {
+                    success: false,
+                    error: 'SNARK verification not available'
+                }
+            });
+            return;
+        }
+
+        const { proof } = data;
+        if (!proof) {
+            this.sendError(clientId, 'No proof provided');
+            return;
+        }
+
+        try {
+            const result = await snarkVerifier.verifyProof(proof);
+            this.sendMessage(clientId, {
+                type: 'proof_verification',
+                data: {
+                    success: true,
+                    valid: result.valid,
+                    error: result.error
+                }
+            });
+        } catch (error) {
+            this.sendMessage(clientId, {
+                type: 'proof_verification',
+                data: {
+                    success: false,
+                    error: error.message
+                }
+            });
+        }
+    }
+
+    /**
+     * Handle request for SNARK system status
+     */
+    handleGetSnarkStatus(clientId) {
+        const status = {
+            available: snarkVerifier.isAvailable(),
+            statistics: snarkVerifier.getStatistics()
+        };
+
+        this.sendMessage(clientId, {
+            type: 'snark_status',
+            data: status
+        });
+    }
+
     handleDisconnection(clientId) {
         console.log(`🔌 Disconnection: ${clientId}`);
-        
+
         const client = this.clients.get(clientId);
         if (client && client.roomId) {
             this.roomManager.leaveRoom(client.roomId, clientId);
-            
+
             this.broadcastToRoom(client.roomId, clientId, {
                 type: 'player_disconnected',
                 data: { playerId: clientId }
@@ -971,7 +1240,7 @@ class IndianPokerClient {
 
     connect() {
         this.ws = new WebSocket(this.serverUrl);
-        
+
         this.ws.onopen = () => {
             console.log('🃏 Connected to Indian Poker Server');
         };
@@ -992,27 +1261,27 @@ class IndianPokerClient {
                 this.clientId = message.data.clientId;
                 console.log('✅ Connected with ID:', this.clientId);
                 break;
-                
+
             case 'rooms_list':
                 console.log('🏠 Available rooms:', message.data.rooms);
                 break;
-                
+
             case 'game_started':
                 console.log('Game started:', message.data.message);
                 break;
-                
+
             case 'bet_made':
                 console.log(message.data.playerName + ' bet ' + message.data.amount);
                 break;
-                
+
             case 'cards_shown':
                 console.log(message.data.playerName + ' shows: ' + message.data.handValue.name);
                 break;
-                
+
             case 'game_ended':
                 console.log(message.data.message);
                 break;
-                
+
             case 'error':
                 console.error('Error:', message.data.message);
                 break;
@@ -1173,7 +1442,7 @@ if (require.main === module) {
     // Start the server if run directly
     const port = process.env.PORT || 8080;
     const server = new IndianPokerServer(port);
-    
+
     // Keep the process running
     process.on('SIGINT', () => {
         console.log('\n🛑 Shutting down Indian Poker Server...');
