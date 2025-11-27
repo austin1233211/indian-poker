@@ -1069,7 +1069,7 @@ class IndianPokerServer {
         this.startGameInRoom(client.roomId);
     }
 
-    startGameInRoom(roomId) {
+    async startGameInRoom(roomId) {
         const room = this.roomManager.getRoom(roomId);
         if (!room) return;
 
@@ -1084,7 +1084,7 @@ class IndianPokerServer {
         // Start the game based on variant
         switch (room.variant) {
             case GAME_VARIANTS.TEEN_PATTI:
-                this.startTeenPattiGame(room);
+                await this.startTeenPattiGame(room);
                 break;
             case GAME_VARIANTS.JHANDI_MUNDA:
                 this.startJhandiMundaGame(room);
