@@ -2,6 +2,8 @@
 
 A real-time multiplayer Indian poker game server with advanced cryptographic security features.
 
+<!-- Test comment for dummy PR -->
+
 ## Components
 
 ### 1. indian-poker-server (Main Game Server)
