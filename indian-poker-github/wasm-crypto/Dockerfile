@@ -5,8 +5,8 @@ FROM rust:1.85 AS builder
 # Install clang (required by blst crate for BLS12-381 cryptography)
 RUN apt-get update && apt-get install -y clang curl && rm -rf /var/lib/apt/lists/*
 
-# Install wasm-pack
-RUN cargo install wasm-pack
+# Install wasm-pack using official installer (prebuilt binary avoids Rust version issues)
+RUN curl -sSf https://rustwasm.github.io/wasm-pack/installer.sh | sh -s -- -f
 
 WORKDIR /app
 
