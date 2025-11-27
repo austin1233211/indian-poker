@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Indian Poker Client Example</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 10px 0;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin: 20px 0;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .input-group {
+            margin: 10px 0;
+        }
+        input, select {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin-right: 10px;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .connected { background-color: #d4edda; border: 1px solid #c3e6cb; }
+        .disconnected { background-color: #f8d7da; border: 1px solid #f5c6cb; }
+        .in-room { background-color: #d1ecf1; border: 1px solid #bee5eb; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🃏 Indian Poker Client Demo</h1>
+        
+        <div id="status" class="status disconnected">
+            Status: Disconnected
+        </div>
+
+        <div class="input-group">
+            <input type="text" id="playerName" placeholder="Enter your name" value="DemoPlayer">
+            <input type="number" id="chips" placeholder="Starting chips" value="1000">
+            <button onclick="connect()">Connect to Server</button>
+        </div>
+
+        <div class="controls">
+            <div>
+                <h3>Room Management</h3>
+                <input type="text" id="roomName" placeholder="Room name">
+                <select id="gameVariant">
+                    <option value="teen_patti">Teen Patti</option>
+                    <option value="jhandi_munda">Jhandi Munda</option>
+                </select>
+                <button onclick="createRoom()">Create Room</button>
+                <button onclick="listRooms()">List Rooms</button>
+                <input type="text" id="roomId" placeholder="Room ID to join">
+                <button onclick="joinRoom()">Join Room</button>
+            </div>
+
+            <div>
+                <h3>Game Actions</h3>
+                <button onclick="startGame()">Start Game</button>
+                <button onclick="leaveRoom()">Leave Room</button>
+                <input type="number" id="betAmount" placeholder="Bet amount" value="50">
+                <button onclick="makeBet()">Make Bet</button>
+                <button onclick="fold()">Fold</button>
+                <button onclick="showCards()">Show Cards</button>
+            </div>
+        </div>
+
+        <h3>Server Log</h3>
+        <div id="log" class="log"></div>
+    </div>
+
+    <script>
+        class IndianPokerClient {
+            constructor() {
+                this.ws = null;
+                this.clientId = null;
+                this.roomId = null;
+                this.playerName = '';
+                this.updateStatus('Disconnected');
+            }
+
+            connect() {
+                const name = document.getElementById('playerName').value.trim();
+                if (!name) {
+                    this.log('Please enter your name');
+                    return;
+                }
+
+                this.playerName = name;
+                this.log('Connecting to server...');
+
+                try {
+                    this.ws = new WebSocket('ws://localhost:8080');
+                    
+                    this.ws.onopen = () => {
+                        this.log('✓ Connected to Indian Poker Server');
+                        this.updateStatus('Connected');
+                    };
+
+                    this.ws.onmessage = (event) => {
+                        const message = JSON.parse(event.data);
+                        this.handleMessage(message);
+                    };
+
+                    this.ws.onclose = () => {
+                        this.log('✗ Disconnected from server');
+                        this.updateStatus('Disconnected');
+                    };
+
+                    this.ws.onerror = (error) => {
+                        this.log('✗ Connection error: ' + error);
+                    };
+                } catch (error) {
+                    this.log('✗ Failed to connect: ' + error.message);
+                }
+            }
+
+            handleMessage(message) {
+                const time = new Date().toLocaleTimeString();
+                
+                switch (message.type) {
+                    case 'connection_established':
+                        this.clientId = message.data.clientId;
+                        this.log(`✓ Connected with ID: ${this.clientId}`);
+                        this.log(`Welcome message: ${message.data.message}`);
+                        break;
+                        
+                    case 'rooms_list':
+                        this.log('📋 Available rooms:');
+                        message.data.rooms.forEach(room => {
+                            this.log(`   - ${room.name} (${room.gameType}) [${room.playerCount}/${room.maxPlayers}]`);
+                        });
+                        break;
+                        
+                    case 'room_created':
+                        this.roomId = message.data.room.id;
+                        this.log(`🏠 Created room: ${this.roomId}`);
+                        this.log(`   Room: ${message.data.room.name}`);
+                        this.log(`   Game: ${message.data.room.gameType}`);
+                        break;
+                        
+                    case 'room_joined':
+                        this.roomId = message.data.room.id;
+                        this.log(`🚪 Joined room: ${this.roomId}`);
+                        this.log(`   Room: ${message.data.room.name}`);
+                        this.log(`   Game: ${message.data.room.gameType}`);
+                        this.updateStatus('In Room');
+                        break;
+                        
+                    case 'player_joined':
+                        this.log(`👋 Player joined: ${message.data.player.name}`);
+                        break;
+                        
+                    case 'game_started':
+                        this.log(`🎮 Game started!`);
+                        this.log(`   ${message.data.message}`);
+                        break;
+                        
+                    case 'bet_made':
+                        this.log(`💰 ${message.data.playerName} bet ${message.data.amount}`);
+                        break;
+                        
+                    case 'cards_shown':
+                        this.log(`🃏 ${message.data.playerName} showed: ${message.data.handValue.name}`);
+                        this.log(`   Cards: ${message.data.cards.join(', ')}`);
+                        break;
+                        
+                    case 'player_folded':
+                        this.log(`🏃 ${message.data.playerName} folded`);
+                        break;
+                        
+                    case 'game_ended':
+                        this.log(`🎉 Game ended: ${message.data.message}`);
+                        if (message.data.winningHand) {
+                            this.log(`   Winning hand: ${message.data.winningHand.name}`);
+                        }
+                        break;
+                        
+                    case 'error':
+                        this.log(`❌ Error: ${message.data.message}`);
+                        break;
+                        
+                    default:
+                        this.log(`📨 Unknown message: ${JSON.stringify(message)}`);
+                }
+            }
+
+            send(message) {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify(message));
+                    this.log(`→ Sent: ${message.type}`);
+                } else {
+                    this.log('✗ Not connected to server');
+                }
+            }
+
+            updateStatus(status) {
+                const statusDiv = document.getElementById('status');
+                statusDiv.textContent = `Status: ${status}`;
+                statusDiv.className = `status ${status.toLowerCase().replace(' ', '-')}`;
+            }
+
+            log(message) {
+                const logDiv = document.getElementById('log');
+                const time = new Date().toLocaleTimeString();
+                logDiv.innerHTML += `<div>[${time}] ${message}</div>`;
+                logDiv.scrollTop = logDiv.scrollHeight;
+            }
+
+            // API Methods
+            createRoom() {
+                const variant = document.getElementById('gameVariant').value;
+                const roomName = document.getElementById('roomName').value.trim();
+                this.send({
+                    type: 'create_room',
+                    data: { variant, roomName }
+                });
+            }
+
+            listRooms() {
+                this.send({ type: 'list_rooms' });
+            }
+
+            joinRoom() {
+                const roomId = document.getElementById('roomId').value.trim();
+                if (!roomId) {
+                    this.log('Please enter room ID');
+                    return;
+                }
+                
+                const chips = parseInt(document.getElementById('chips').value) || 1000;
+                this.send({
+                    type: 'join_room',
+                    data: { roomId, playerName: this.playerName, chips }
+                });
+            }
+
+            leaveRoom() {
+                this.send({ type: 'leave_room' });
+                this.updateStatus('Connected');
+            }
+
+            startGame() {
+                this.send({ type: 'start_game' });
+            }
+
+            makeBet() {
+                const amount = parseInt(document.getElementById('betAmount').value) || 50;
+                this.send({
+                    type: 'make_bet',
+                    data: { amount }
+                });
+            }
+
+            fold() {
+                this.send({ type: 'fold' });
+            }
+
+            showCards() {
+                this.send({ type: 'show_cards' });
+            }
+        }
+
+        // Global client instance
+        const client = new IndianPokerClient();
+
+        // Global functions for HTML buttons
+        function connect() { client.connect(); }
+        function createRoom() { client.createRoom(); }
+        function listRooms() { client.listRooms(); }
+        function joinRoom() { client.joinRoom(); }
+        function leaveRoom() { client.leaveRoom(); }
+        function startGame() { client.startGame(); }
+        function makeBet() { client.makeBet(); }
+        function fold() { client.fold(); }
+        function showCards() { client.showCards(); }
+
+        // Auto-connect for demo
+        setTimeout(() => {
+            if (!client.ws || client.ws.readyState !== WebSocket.OPEN) {
+                client.log('Auto-connecting for demo...');
+                client.connect();
+            }
+        }, 1000);
+    </script>
+</body>
+</html>

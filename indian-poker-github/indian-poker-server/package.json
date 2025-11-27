@@ -1,0 +1,40 @@
+{
+  "name": "indian-poker-server",
+  "version": "1.0.0",
+  "description": "Comprehensive WebSocket server for traditional Indian poker games including Teen Patti and Jhandi Munda",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "echo \"No tests specified\""
+  },
+  "keywords": [
+    "poker",
+    "teen-patti",
+    "jhandi-munda", 
+    "indian-games",
+    "websocket",
+    "real-time",
+    "multiplayer",
+    "gaming",
+    "indian-poker",
+    "traditional-games"
+  ],
+  "author": "Indian Poker Server",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.16.0",
+    "uuid": "^9.0.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/indian-poker-server"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/indian-poker-server/issues"
+  },
+  "homepage": "https://github.com/yourusername/indian-poker-server#readme"
+}

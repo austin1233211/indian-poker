@@ -1,0 +1,77 @@
+{
+  "name": "wasm-crypto",
+  "version": "1.0.0",
+  "description": "High-performance WebAssembly cryptographic operations module",
+  "main": "web/wasm-wrapper.js",
+  "types": "web/index.d.ts",
+  "scripts": {
+    "build": "bash build.sh",
+    "serve": "npx serve web/",
+    "test": "npm run test:rust && npm run test:js",
+    "test:rust": "cd benches && cargo test",
+    "test:js": "jest",
+    "benchmark": "node benchmarks/run-benchmarks.js",
+    "lint": "eslint web/**/*.ts",
+    "format": "prettier --write web/**/*.ts",
+    "clean": "rm -rf web/pkg/",
+    "rebuild": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "webassembly",
+    "wasm",
+    "cryptography",
+    "bls12-381",
+    "cryptographic-operations",
+    "high-performance",
+    "field-arithmetic",
+    "point-operations",
+    "hash-functions"
+  ],
+  "author": "WASM Crypto Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/example/wasm-crypto.git"
+  },
+  "bugs": {
+    "url": "https://github.com/example/wasm-crypto/issues"
+  },
+  "homepage": "https://github.com/example/wasm-crypto#readme",
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@typescript-eslint/eslint-plugin": "^5.57.0",
+    "@typescript-eslint/parser": "^5.57.0",
+    "eslint": "^8.37.0",
+    "jest": "^29.5.0",
+    "prettier": "^2.8.7",
+    "typescript": "^5.0.3"
+  },
+  "dependencies": {},
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
+  "browserslist": [
+    "> 1%",
+    "last 2 versions",
+    "not dead"
+  ],
+  "files": [
+    "web/",
+    "README.md",
+    "INTEGRATION.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "import": "./web/wasm-wrapper.js",
+      "require": "./web/wasm-wrapper.js"
+    },
+    "./performance": "./benchmarks/performance.js",
+    "./demo": "./web/demo.html"
+  },
+  "wasm": {
+    "file": "web/pkg/wasm_crypto_bg.wasm",
+    "glue": "web/pkg/wasm_crypto.js"
+  }
+}

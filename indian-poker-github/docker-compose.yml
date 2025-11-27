@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  # Main Indian Poker Game Server
+  indian-poker-server:
+    build:
+      context: ./code/code/indian-poker-server
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "const ws = new (require('ws'))('ws://localhost:8080'); ws.on('open', () => process.exit(0)); ws.on('error', () => process.exit(1)); setTimeout(() => process.exit(1), 5000);"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PIR Server (Private Information Retrieval)
+  pir-server:
+    build:
+      context: ./code/code/pir-server
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_CLIENT=sqlite
+      - DB_PATH=/app/data/pir_server.db
+      - ENCRYPTION_SECRET=super_secure_encryption_key_32_chars_minimum
+      - JWT_SECRET=jwt_secret_key_for_token_signing_32chars
+    volumes:
+      - pir-data:/app/data
+    restart: unless-stopped
+    depends_on:
+      - indian-poker-server
+
+volumes:
+  pir-data:

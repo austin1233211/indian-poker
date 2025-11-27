@@ -1,0 +1,192 @@
+version: '3.8'
+
+services:
+  # PIR Server Application
+  pir-server:
+    build: .
+    container_name: pir-server
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      
+      # Database Configuration
+      - DB_CLIENT=postgres
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=pir_server
+      - DB_USER=pir_user
+      - DB_PASSWORD=pir_secure_password
+      - DB_SSL=false
+      
+      # Security Configuration
+      - ENCRYPTION_SECRET=your-super-secure-encryption-secret-key-here
+      - JWT_SECRET=your-jwt-secret-key-here
+      
+      # Rate Limiting
+      - PIR_QUERY_LIMIT=1000
+      - PIR_RESPONSE_TIMEOUT=30000
+      - PIR_CACHE_SIZE=1000
+      - PIR_ENABLE_CACHE=true
+      - PIR_ENABLE_LOGGING=true
+      
+      # Authentication
+      - MAX_LOGIN_ATTEMPTS=5
+      - LOCKOUT_MINUTES=15
+      
+      # Logging
+      - LOG_LEVEL=info
+      - LOG_DIR=/app/logs
+      
+      # CORS
+      - ALLOWED_ORIGINS=http://localhost:3000,https://yourdomain.com
+      
+      # Maintenance
+      - MAINTENANCE_MODE=false
+    
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    
+    networks:
+      - pir-network
+    
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: pir-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=pir_server
+      - POSTGRES_USER=pir_user
+      - POSTGRES_PASSWORD=pir_secure_password
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
+    
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    
+    ports:
+      - "5432:5432"
+    
+    networks:
+      - pir-network
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pir_user -d pir_server"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Redis for Caching and Session Storage
+  redis:
+    image: redis:7-alpine
+    container_name: pir-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass redis_secure_password
+    volumes:
+      - redis_data:/data
+    
+    ports:
+      - "6379:6379"
+    
+    networks:
+      - pir-network
+    
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_secure_password", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Nginx Reverse Proxy (for production)
+  nginx:
+    image: nginx:alpine
+    container_name: pir-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+      - ./logs/nginx:/var/log/nginx
+    
+    depends_on:
+      - pir-server
+    
+    networks:
+      - pir-network
+    
+    profiles:
+      - production
+
+  # Monitoring with Prometheus (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: pir-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    
+    networks:
+      - pir-network
+    
+    profiles:
+      - monitoring
+
+  # Grafana Dashboard (optional)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: pir-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin_password
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    
+    networks:
+      - pir-network
+    
+    profiles:
+      - monitoring
+
+# Networks
+networks:
+  pir-network:
+    driver: bridge
+    name: pir-network
+
+# Volumes
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local

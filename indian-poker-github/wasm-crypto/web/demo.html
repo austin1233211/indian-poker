@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WASM Crypto Module Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        h1 {
+            color: #333;
+            text-align: center;
+            border-bottom: 2px solid #007acc;
+            padding-bottom: 10px;
+        }
+        
+        h2 {
+            color: #555;
+            margin-top: 30px;
+        }
+        
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .status.loading {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        
+        .button {
+            background-color: #007acc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 14px;
+        }
+        
+        .button:hover {
+            background-color: #005a9e;
+        }
+        
+        .button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .result {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 10px 0;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+        
+        .benchmark-results {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .benchmark-card {
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            padding: 15px;
+        }
+        
+        .benchmark-card h3 {
+            margin-top: 0;
+            color: #007acc;
+        }
+        
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            margin: 5px 0;
+        }
+        
+        .metric-value {
+            font-weight: bold;
+        }
+        
+        .performance-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 5px 0;
+        }
+        
+        .performance-fill {
+            height: 100%;
+            background-color: #28a745;
+            transition: width 0.3s ease;
+        }
+        
+        .code-example {
+            background-color: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            overflow-x: auto;
+        }
+        
+        .loading-spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #007acc;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-right: 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 WASM Crypto Module Demo</h1>
+        
+        <div id="status" class="status loading">
+            <span class="loading-spinner"></span>
+            Initializing WASM Crypto Module...
+        </div>
+        
+        <div id="controls" style="display: none;">
+            <h2>Quick Actions</h2>
+            <button class="button" onclick="runBasicTest()">Run Basic Test</button>
+            <button class="button" onclick="runQuickBenchmark()">Quick Benchmark</button>
+            <button class="button" onclick="runFullBenchmark()">Full Benchmark Suite</button>
+            <button class="button" onclick="testAllOperations()">Test All Operations</button>
+        </div>
+        
+        <div id="results"></div>
+        
+        <div id="benchmark-section" style="display: none;">
+            <h2>Performance Benchmarks</h2>
+            <div class="benchmark-results" id="benchmark-results"></div>
+        </div>
+        
+        <div class="container">
+            <h2>Integration Example</h2>
+            <p>Here's how to integrate the WASM Crypto Module into your application:</p>
+            
+            <div class="code-example">
+// Import the crypto module
+import { CryptoModule } from './wasm-crypto/web/index.js';
+
+// Initialize the module
+const cryptoModule = new CryptoModule();
+await cryptoModule.initialize('/path/to/wasm_crypto_bg.wasm');
+
+// Create field elements
+const a = cryptoModule.createFpFromHex("17f1a3e8e02d4c6a7b9f8e0d2c5a9b8e4f1d6c7");
+const b = cryptoModule.createRandomFp();
+
+// Perform operations
+const c = a.mul(b);
+const d = a.add(b);
+
+// Create points
+const g1 = cryptoModule.createRandomG1();
+const g2 = cryptoModule.createRandomG2();
+
+// Perform pairing
+const pairingResult = cryptoModule.pairing(g1, g2);
+
+// Hash data
+const hash = cryptoModule.sha256(new Uint8Array([1, 2, 3, 4, 5]));
+
+// Run benchmarks
+const benchmarks = await cryptoModule.runBenchmarks();
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { cryptoModule } from './wasm-wrapper.js';
+        import PerformanceBenchmark from './benchmarks/performance.js';
+
+        let benchmarkInstance = null;
+
+        // Initialize the crypto module
+        async function initialize() {
+            try {
+                const statusElement = document.getElementById('status');
+                statusElement.innerHTML = '<span class="loading-spinner"></span>Loading WASM module...';
+                
+                await cryptoModule.initialize();
+                
+                statusElement.className = 'status success';
+                statusElement.innerHTML = '✅ WASM Crypto Module loaded successfully!';
+                
+                document.getElementById('controls').style.display = 'block';
+                
+                // Run self test
+                const selfTestResult = await cryptoModule.selfTest();
+                console.log('Self test result:', selfTestResult);
+                
+            } catch (error) {
+                const statusElement = document.getElementById('status');
+                statusElement.className = 'status error';
+                statusElement.innerHTML = `❌ Failed to load WASM module: ${error.message}`;
+                console.error('Initialization error:', error);
+            }
+        }
+
+        // Run basic functionality test
+        async function runBasicTest() {
+            const resultsElement = document.getElementById('results');
+            resultsElement.innerHTML = '<div class="status loading"><span class="loading-spinner"></span>Running basic test...</div>';
+            
+            try {
+                const results = [];
+                
+                // Test field operations
+                const a = cryptoModule.createRandomFp();
+                const b = cryptoModule.createRandomFp();
+                const c = a.mul(b);
+                const d = a.add(b);
+                
+                results.push('✅ Field multiplication: ' + c.toHex().substring(0, 16) + '...');
+                results.push('✅ Field addition: ' + d.toHex().substring(0, 16) + '...');
+                
+                // Test point operations
+                const p1 = cryptoModule.createRandomG1();
+                const p2 = cryptoModule.createRandomG1();
+                const p3 = p1.add(p2);
+                
+                results.push('✅ Point addition: ' + (p3.isInfinity() ? 'point at infinity' : 'valid point'));
+                
+                // Test hash functions
+                const hash = cryptoModule.sha256(new Uint8Array([1, 2, 3, 4, 5]));
+                results.push('✅ SHA-256 hash: ' + hash.hash.length + ' bytes');
+                
+                resultsElement.innerHTML = `
+                    <div class="status success">
+                        <strong>Basic Test Results:</strong><br>
+                        ${results.join('<br>')}
+                    </div>
+                `;
+                
+            } catch (error) {
+                resultsElement.innerHTML = `
+                    <div class="status error">
+                        ❌ Basic test failed: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        // Run quick benchmark
+        async function runQuickBenchmark() {
+            const resultsElement = document.getElementById('results');
+            resultsElement.innerHTML = '<div class="status loading"><span class="loading-spinner"></span>Running quick benchmark...</div>';
+            
+            try {
+                benchmarkInstance = new PerformanceBenchmark();
+                const results = await benchmarkInstance.runComprehensiveBenchmarks();
+                
+                displayBenchmarkResults(results);
+                
+                resultsElement.innerHTML = `
+                    <div class="status success">
+                        ✅ Quick benchmark completed! Check the results below.
+                    </div>
+                `;
+                
+            } catch (error) {
+                resultsElement.innerHTML = `
+                    <div class="status error">
+                        ❌ Benchmark failed: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        // Run full benchmark suite
+        async function runFullBenchmark() {
+            const resultsElement = document.getElementById('results');
+            resultsElement.innerHTML = '<div class="status loading"><span class="loading-spinner"></span>Running full benchmark suite (this may take a while)...</div>';
+            
+            try {
+                if (!benchmarkInstance) {
+                    benchmarkInstance = new PerformanceBenchmark();
+                }
+                
+                // Run multiple times for more accurate results
+                const allResults = [];
+                for (let i = 0; i < 3; i++) {
+                    const results = await benchmarkInstance.runComprehensiveBenchmarks();
+                    allResults.push(results);
+                }
+                
+                // Average the results
+                const averagedResults = averageBenchmarkResults(allResults);
+                displayBenchmarkResults(averagedResults);
+                
+                resultsElement.innerHTML = `
+                    <div class="status success">
+                        ✅ Full benchmark suite completed! Check the results below.
+                    </div>
+                `;
+                
+            } catch (error) {
+                resultsElement.innerHTML = `
+                    <div class="status error">
+                        ❌ Full benchmark failed: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        // Test all cryptographic operations
+        async function testAllOperations() {
+            const resultsElement = document.getElementById('results');
+            resultsElement.innerHTML = '<div class="status loading"><span class="loading-spinner"></span>Testing all operations...</div>';
+            
+            try {
+                const results = [];
+                const testData = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+                
+                // Test Fp operations
+                const fp1 = cryptoModule.createRandomFp();
+                const fp2 = cryptoModule.createRandomFp();
+                
+                results.push('Testing FpElement operations:');
+                results.push(`  - Random element: ${fp1.toHex().substring(0, 32)}...`);
+                results.push(`  - Addition: ${fp1.add(fp2).toHex().substring(0, 32)}...`);
+                results.push(`  - Multiplication: ${fp1.mul(fp2).toHex().substring(0, 32)}...`);
+                
+                const inverse = fp1.inverse();
+                results.push(`  - Inverse: ${inverse.toHex().substring(0, 32)}...`);
+                
+                // Test G1 operations
+                const g1_1 = cryptoModule.createRandomG1();
+                const g1_2 = cryptoModule.createRandomG1();
+                const g1_sum = g1_1.add(g1_2);
+                
+                results.push('Testing G1Point operations:');
+                results.push(`  - Point addition: ${g1_sum.isInfinity() ? 'at infinity' : 'valid point'}`);
+                
+                const scalar = '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
+                const g1_scalar = g1_1.scalarMul(scalar);
+                results.push(`  - Scalar multiplication: ${g1_scalar.isInfinity() ? 'at infinity' : 'valid point'}`);
+                
+                // Test G2 operations
+                const g2_1 = cryptoModule.createRandomG2();
+                const g2_2 = cryptoModule.createRandomG2();
+                const g2_sum = g2_1.add(g2_2);
+                
+                results.push('Testing G2Point operations:');
+                results.push(`  - Point addition: ${g2_sum.isInfinity() ? 'at infinity' : 'valid point'}`);
+                
+                const g2_scalar = g2_1.scalarMul(scalar);
+                results.push(`  - Scalar multiplication: ${g2_scalar.isInfinity() ? 'at infinity' : 'valid point'}`);
+                
+                // Test pairing
+                const pairing = cryptoModule.pairing(g1_1, g2_1);
+                results.push('Testing pairing:');
+                results.push(`  - G1×G2 pairing: completed`);
+                
+                // Test hash functions
+                const sha256 = cryptoModule.sha256(testData);
+                const sha512 = cryptoModule.sha512(testData);
+                const blake2b = cryptoModule.blake2b(testData);
+                
+                results.push('Testing hash functions:');
+                results.push(`  - SHA-256: ${sha256.hash.length} bytes`);
+                results.push(`  - SHA-512: ${sha512.hash.length} bytes`);
+                results.push(`  - BLAKE2b: ${blake2b.hash.length} bytes`);
+                
+                // Test module info
+                results.push('Module information:');
+                results.push(`  - Version: ${cryptoModule.version()}`);
+                results.push(`  - Initialized: ${cryptoModule.isInitialized()}`);
+                
+                resultsElement.innerHTML = `
+                    <div class="status success">
+                        <strong>All Operations Test Results:</strong><br>
+                        ${results.join('<br>')}
+                    </div>
+                `;
+                
+            } catch (error) {
+                resultsElement.innerHTML = `
+                    <div class="status error">
+                        ❌ All operations test failed: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        // Display benchmark results
+        function displayBenchmarkResults(results) {
+            const benchmarkSection = document.getElementById('benchmark-section');
+            const resultsContainer = document.getElementById('benchmark-results');
+            
+            let html = `
+                <div class="benchmark-card">
+                    <h3>Summary</h3>
+                    <div class="metric">
+                        <span>Average Speedup:</span>
+                        <span class="metric-value">${results.summary.averageSpeedup.toFixed(2)}x</span>
+                    </div>
+                    <div class="metric">
+                        <span>Best Speedup:</span>
+                        <span class="metric-value">${results.summary.bestSpeedup.toFixed(2)}x</span>
+                    </div>
+                    <div class="metric">
+                        <span>Worst Speedup:</span>
+                        <span class="metric-value">${results.summary.worstSpeedup.toFixed(2)}x</span>
+                    </div>
+                    <div class="metric">
+                        <span>Total Operations:</span>
+                        <span class="metric-value">${results.summary.totalOperationsTested}</span>
+                    </div>
+                </div>
+            `;
+            
+            // Field operations
+            for (const result of results.fieldOperations) {
+                const speedupPercent = Math.min(100, (result.speedup / 10) * 100);
+                html += `
+                    <div class="benchmark-card">
+                        <h3>${result.operation}</h3>
+                        <div class="metric">
+                            <span>WASM Time:</span>
+                            <span class="metric-value">${result.wasmTime.toFixed(2)}ms</span>
+                        </div>
+                        <div class="metric">
+                            <span>JS Time:</span>
+                            <span class="metric-value">${result.jsTime.toFixed(2)}ms</span>
+                        </div>
+                        <div class="metric">
+                            <span>Speedup:</span>
+                            <span class="metric-value">${result.speedup.toFixed(2)}x</span>
+                        </div>
+                        <div class="performance-bar">
+                            <div class="performance-fill" style="width: ${speedupPercent}%"></div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Point operations
+            for (const result of results.pointOperations) {
+                const speedupPercent = Math.min(100, (result.speedup / 5) * 100);
+                html += `
+                    <div class="benchmark-card">
+                        <h3>${result.operation}</h3>
+                        <div class="metric">
+                            <span>WASM Time:</span>
+                            <span class="metric-value">${result.wasmTime.toFixed(2)}ms</span>
+                        </div>
+                        <div class="metric">
+                            <span>JS Time:</span>
+                            <span class="metric-value">${result.jsTime.toFixed(2)}ms</span>
+                        </div>
+                        <div class="metric">
+                            <span>Speedup:</span>
+                            <span class="metric-value">${result.speedup.toFixed(2)}x</span>
+                        </div>
+                        <div class="performance-bar">
+                            <div class="performance-fill" style="width: ${speedupPercent}%"></div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            resultsContainer.innerHTML = html;
+            benchmarkSection.style.display = 'block';
+        }
+
+        // Average benchmark results from multiple runs
+        function averageBenchmarkResults(allResults) {
+            const count = allResults.length;
+            if (count === 0) return null;
+            
+            const averaged = JSON.parse(JSON.stringify(allResults[0]));
+            
+            // Average summary
+            averaged.summary.averageSpeedup = allResults.reduce((sum, r) => sum + r.summary.averageSpeedup, 0) / count;
+            averaged.summary.bestSpeedup = allResults.reduce((sum, r) => sum + r.summary.bestSpeedup, 0) / count;
+            averaged.summary.worstSpeedup = allResults.reduce((sum, r) => sum + r.summary.worstSpeedup, 0) / count;
+            
+            // Average other metrics
+            averaged.fieldOperations = averageArrayOfResults(allResults.map(r => r.fieldOperations));
+            averaged.pointOperations = averageArrayOfResults(allResults.map(r => r.pointOperations));
+            averaged.hashOperations = averageArrayOfResults(allResults.map(r => r.hashOperations));
+            averaged.memoryComparison = averageArrayOfResults(allResults.map(r => r.memoryComparison));
+            
+            return averaged;
+        }
+
+        function averageArrayOfResults(arrays) {
+            if (arrays.length === 0) return [];
+            
+            const result = [];
+            const maxLength = Math.max(...arrays.map(a => a.length));
+            
+            for (let i = 0; i < maxLength; i++) {
+                const items = arrays.map(a => a[i]).filter(item => item !== undefined);
+                if (items.length > 0) {
+                    const averaged = {
+                        ...items[0],
+                        wasmTime: items.reduce((sum, item) => sum + item.wasmTime, 0) / items.length,
+                        jsTime: items.reduce((sum, item) => sum + item.jsTime, 0) / items.length,
+                        speedup: items.reduce((sum, item) => sum + item.speedup, 0) / items.length
+                    };
+                    result.push(averaged);
+                }
+            }
+            
+            return result;
+        }
+
+        // Make functions global for HTML onclick handlers
+        window.runBasicTest = runBasicTest;
+        window.runQuickBenchmark = runQuickBenchmark;
+        window.runFullBenchmark = runFullBenchmark;
+        window.testAllOperations = testAllOperations;
+
+        // Initialize on page load
+        initialize();
+    </script>
+</body>
+</html>
