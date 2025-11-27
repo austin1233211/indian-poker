@@ -1,9 +1,6 @@
 use wasm_bindgen::prelude::*;
-use blst::{blst_scalar, blst_p1, blst_p1_affine, blst_p2, blst_p2_affine, blst_fp, blst_fp2};
-use num_bigint::BigUint;
-use num_traits::Num;
+use blst::{blst_p1, blst_p1_affine, blst_p2, blst_p2_affine, blst_fp, blst_fp2};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // Import memory for WASM
 #[wasm_bindgen]
@@ -22,28 +19,28 @@ pub fn wasm_start() {
 
 /// BLS12-381 Field element representation
 #[wasm_bindgen]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub struct FpElement {
     pub(crate) value: blst_fp,
 }
 
 /// BLS12-381 Extension field element (F_p²)
 #[wasm_bindgen]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub struct Fp2Element {
     pub(crate) value: blst_fp2,
 }
 
 /// BLS12-381 G1 Point
 #[wasm_bindgen]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub struct G1Point {
     pub(crate) point: blst_p1,
 }
 
 /// BLS12-381 G2 Point
 #[wasm_bindgen]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub struct G2Point {
     pub(crate) point: blst_p2,
 }
@@ -52,19 +49,60 @@ pub struct G2Point {
 #[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HashResult {
-    pub hash: Vec<u8>,
-    pub algorithm: String,
+    hash: Vec<u8>,
+    algorithm: String,
+}
+
+#[wasm_bindgen]
+impl HashResult {
+    #[wasm_bindgen(getter)]
+    pub fn hash(&self) -> Vec<u8> {
+        self.hash.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn algorithm(&self) -> String {
+        self.algorithm.clone()
+    }
 }
 
 /// Performance metrics
 #[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerformanceMetrics {
-    pub operation: String,
-    pub wasm_time_us: u64,
-    pub js_time_us: u64,
-    pub speedup: f64,
-    pub memory_used_kb: u64,
+    operation: String,
+    wasm_time_us: u64,
+    js_time_us: u64,
+    speedup: f64,
+    memory_used_kb: u64,
+}
+
+#[wasm_bindgen]
+impl PerformanceMetrics {
+    #[wasm_bindgen(getter)]
+    pub fn operation(&self) -> String {
+        self.operation.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn wasm_time_us(&self) -> u64 {
+        self.wasm_time_us
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn js_time_us(&self) -> u64 {
+        self.js_time_us
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn speedup(&self) -> f64 {
+        self.speedup
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn memory_used_kb(&self) -> u64 {
+        self.memory_used_kb
+    }
 }
 
 #[wasm_bindgen]
@@ -81,7 +119,7 @@ impl FpElement {
         
         let mut value = blst_fp::default();
         unsafe {
-            blst::blst_fp_from_bytes(&mut value, bytes.as_ptr());
+            blst::blst_fp_from_bendian(&mut value, bytes.as_ptr());
         }
         
         Ok(FpElement { value })
@@ -95,7 +133,7 @@ impl FpElement {
         
         let mut value = blst_fp::default();
         unsafe {
-            blst::blst_fp_from_bytes(&mut value, bytes.as_ptr());
+            blst::blst_fp_from_bendian(&mut value, bytes.as_ptr());
         }
         
         FpElement { value }
@@ -142,7 +180,7 @@ impl FpElement {
     pub fn is_zero(&self) -> bool {
         let mut bytes = [0u8; 48];
         unsafe {
-            blst::blst_fp_to_bytes(bytes.as_mut_ptr(), &self.value);
+            blst::blst_bendian_from_fp(bytes.as_mut_ptr(), &self.value);
         }
         bytes.iter().all(|&b| b == 0)
     }
@@ -152,7 +190,7 @@ impl FpElement {
     pub fn to_hex(&self) -> String {
         let mut bytes = [0u8; 48];
         unsafe {
-            blst::blst_fp_to_bytes(bytes.as_mut_ptr(), &self.value);
+            blst::blst_bendian_from_fp(bytes.as_mut_ptr(), &self.value);
         }
         hex::encode(bytes)
     }
@@ -269,7 +307,7 @@ impl G1Point {
         // Check if x coordinate is all zeros
         let mut x_bytes = [0u8; 48];
         unsafe {
-            blst::blst_fp_to_bytes(x_bytes.as_mut_ptr(), &point.x);
+            blst::blst_bendian_from_fp(x_bytes.as_mut_ptr(), &point.x);
         }
         x_bytes.iter().all(|&b| b == 0)
     }
@@ -286,8 +324,8 @@ impl G1Point {
         let mut y_bytes = [0u8; 48];
         
         unsafe {
-            blst::blst_fp_to_bytes(x_bytes.as_mut_ptr(), &point.x);
-            blst::blst_fp_to_bytes(y_bytes.as_mut_ptr(), &point.y);
+            blst::blst_bendian_from_fp(x_bytes.as_mut_ptr(), &point.x);
+            blst::blst_bendian_from_fp(y_bytes.as_mut_ptr(), &point.y);
         }
         
         let coords = serde_wasm_bindgen::to_value(&serde_json::json!({
@@ -365,7 +403,7 @@ impl G2Point {
         // Check if x coordinate's first component is all zeros
         let mut x_bytes = [0u8; 48];
         unsafe {
-            blst::blst_fp_to_bytes(x_bytes.as_mut_ptr(), &point.x.fp[0]);
+            blst::blst_bendian_from_fp(x_bytes.as_mut_ptr(), &point.x.fp[0]);
         }
         x_bytes.iter().all(|&b| b == 0)
     }
@@ -384,10 +422,10 @@ impl G2Point {
         let mut y_c1_bytes = [0u8; 48];
         
         unsafe {
-            blst::blst_fp_to_bytes(x_c0_bytes.as_mut_ptr(), &point.x.fp[0]);
-            blst::blst_fp_to_bytes(x_c1_bytes.as_mut_ptr(), &point.x.fp[1]);
-            blst::blst_fp_to_bytes(y_c0_bytes.as_mut_ptr(), &point.y.fp[0]);
-            blst::blst_fp_to_bytes(y_c1_bytes.as_mut_ptr(), &point.y.fp[1]);
+            blst::blst_bendian_from_fp(x_c0_bytes.as_mut_ptr(), &point.x.fp[0]);
+            blst::blst_bendian_from_fp(x_c1_bytes.as_mut_ptr(), &point.x.fp[1]);
+            blst::blst_bendian_from_fp(y_c0_bytes.as_mut_ptr(), &point.y.fp[0]);
+            blst::blst_bendian_from_fp(y_c1_bytes.as_mut_ptr(), &point.y.fp[1]);
         }
         
         let coords = serde_wasm_bindgen::to_value(&serde_json::json!({
