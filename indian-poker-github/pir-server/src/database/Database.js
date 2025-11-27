@@ -16,9 +16,14 @@ class Database {
   async connect() {
     try {
       // Database configuration from environment
+      const client = process.env.DB_CLIENT || 'postgres';
+      const isSqlite = client === 'sqlite' || client === 'sqlite3' || client === 'better-sqlite3';
+      
       const config = {
-        client: process.env.DB_CLIENT || 'postgres',
+        client: client,
         connection: this.getConnectionConfig(),
+        // SQLite requires useNullAsDefault for proper insert behavior
+        useNullAsDefault: isSqlite,
         pool: {
           min: 2,
           max: 10,
