@@ -10,7 +10,7 @@ WORKDIR /app
 COPY indian-poker-github/indian-poker-server/package*.json ./
 
 # Install dependencies
-RUN npm ci --only=production
+RUN npm install --omit=dev
 
 # Copy application code from the indian-poker-server directory
 COPY indian-poker-github/indian-poker-server/ ./
