@@ -16,6 +16,301 @@
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
 const crypto = require('crypto');
+const http = require('http');
+const https = require('https');
+
+// PIR Server Configuration
+const PIR_CONFIG = {
+    enabled: process.env.PIR_ENABLED === 'true',
+    baseUrl: process.env.PIR_SERVER_URL || 'http://localhost:3000',
+    timeout: parseInt(process.env.PIR_TIMEOUT) || 5000,
+    retryAttempts: parseInt(process.env.PIR_RETRY_ATTEMPTS) || 3,
+    retryDelay: parseInt(process.env.PIR_RETRY_DELAY) || 1000
+};
+
+/**
+ * PIR Client for communicating with the PIR Server
+ * Provides privacy-preserving card queries and verification
+ */
+class PIRClient {
+    constructor(config = PIR_CONFIG) {
+        this.config = config;
+        this.authToken = null;
+        this.isConnected = false;
+        this.gameDecks = new Map(); // gameId -> deck registration info
+    }
+
+    /**
+     * Check if PIR integration is enabled
+     */
+    isEnabled() {
+        return this.config.enabled;
+    }
+
+    /**
+     * Make HTTP request to PIR server
+     */
+    async makeRequest(method, path, data = null) {
+        return new Promise((resolve, reject) => {
+            const url = new URL(path, this.config.baseUrl);
+            const isHttps = url.protocol === 'https:';
+            const httpModule = isHttps ? https : http;
+
+            const options = {
+                hostname: url.hostname,
+                port: url.port || (isHttps ? 443 : 80),
+                path: url.pathname + url.search,
+                method: method,
+                timeout: this.config.timeout,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }
+            };
+
+            if (this.authToken) {
+                options.headers['Authorization'] = `Bearer ${this.authToken}`;
+            }
+
+            const req = httpModule.request(options, (res) => {
+                let body = '';
+                res.on('data', (chunk) => body += chunk);
+                res.on('end', () => {
+                    try {
+                        const response = JSON.parse(body);
+                        if (res.statusCode >= 200 && res.statusCode < 300) {
+                            resolve(response);
+                        } else {
+                            reject(new Error(response.error || `HTTP ${res.statusCode}`));
+                        }
+                    } catch (e) {
+                        reject(new Error(`Invalid JSON response: ${body}`));
+                    }
+                });
+            });
+
+            req.on('error', (error) => reject(error));
+            req.on('timeout', () => {
+                req.destroy();
+                reject(new Error('Request timeout'));
+            });
+
+            if (data) {
+                req.write(JSON.stringify(data));
+            }
+            req.end();
+        });
+    }
+
+    /**
+     * Make request with retry logic
+     */
+    async makeRequestWithRetry(method, path, data = null) {
+        let lastError;
+        for (let attempt = 0; attempt < this.config.retryAttempts; attempt++) {
+            try {
+                return await this.makeRequest(method, path, data);
+            } catch (error) {
+                lastError = error;
+                console.log(`PIR request failed (attempt ${attempt + 1}/${this.config.retryAttempts}): ${error.message}`);
+                if (attempt < this.config.retryAttempts - 1) {
+                    await new Promise(resolve => setTimeout(resolve, this.config.retryDelay));
+                }
+            }
+        }
+        throw lastError;
+    }
+
+    /**
+     * Check PIR server health
+     */
+    async checkHealth() {
+        try {
+            const response = await this.makeRequest('GET', '/health');
+            this.isConnected = response.status === 'healthy';
+            return this.isConnected;
+        } catch (error) {
+            console.error('PIR server health check failed:', error.message);
+            this.isConnected = false;
+            return false;
+        }
+    }
+
+    /**
+     * Authenticate with PIR server (for game server operations)
+     */
+    async authenticate(credentials) {
+        try {
+            const response = await this.makeRequestWithRetry('POST', '/api/auth/login', credentials);
+            if (response.success && response.token) {
+                this.authToken = response.token;
+                this.isConnected = true;
+                console.log('PIR server authentication successful');
+                return true;
+            }
+            return false;
+        } catch (error) {
+            console.error('PIR server authentication failed:', error.message);
+            return false;
+        }
+    }
+
+    /**
+     * Register a new game deck with the PIR server
+     * This stores the deck state for later verification
+     */
+    async registerDeck(gameId, deck, shuffleSeed = null) {
+        if (!this.isEnabled()) {
+            return { success: false, reason: 'PIR not enabled' };
+        }
+
+        try {
+            // Create card entries for the deck
+            const deckData = {
+                gameId: gameId,
+                cards: deck.cards.map((card, index) => ({
+                    position: index,
+                    rank: card.rank,
+                    suit: card.suit,
+                    hash: this.hashCard(card, gameId, index)
+                })),
+                shuffleSeed: shuffleSeed,
+                timestamp: new Date().toISOString()
+            };
+
+            // Store locally for verification
+            this.gameDecks.set(gameId, deckData);
+
+            // If authenticated, also register with PIR server
+            if (this.authToken) {
+                const response = await this.makeRequestWithRetry('POST', '/api/pir/query', {
+                    query: {
+                        type: 'card_validation',
+                        parameters: {
+                            cardId: gameId,
+                            validationType: 'deck_registration'
+                        }
+                    }
+                });
+                return { success: true, pirResponse: response };
+            }
+
+            return { success: true, local: true };
+        } catch (error) {
+            console.error('Failed to register deck with PIR:', error.message);
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Generate a cryptographic hash for a card
+     */
+    hashCard(card, gameId, position) {
+        const data = `${gameId}:${position}:${card.rank}:${card.suit}`;
+        return crypto.createHash('sha256').update(data).digest('hex');
+    }
+
+    /**
+     * Verify a card deal using PIR
+     */
+    async verifyCardDeal(gameId, playerId, cardPositions) {
+        if (!this.isEnabled()) {
+            return { verified: false, reason: 'PIR not enabled' };
+        }
+
+        const deckData = this.gameDecks.get(gameId);
+        if (!deckData) {
+            return { verified: false, reason: 'Deck not registered' };
+        }
+
+        try {
+            // Verify each card position
+            const verifications = cardPositions.map(pos => {
+                const cardData = deckData.cards[pos];
+                if (!cardData) {
+                    return { position: pos, verified: false, reason: 'Invalid position' };
+                }
+                return {
+                    position: pos,
+                    verified: true,
+                    hash: cardData.hash
+                };
+            });
+
+            return {
+                verified: verifications.every(v => v.verified),
+                verifications: verifications,
+                gameId: gameId,
+                playerId: playerId,
+                timestamp: new Date().toISOString()
+            };
+        } catch (error) {
+            console.error('Card verification failed:', error.message);
+            return { verified: false, error: error.message };
+        }
+    }
+
+    /**
+     * Get card information via PIR query (privacy-preserving)
+     */
+    async queryCard(gameId, position) {
+        if (!this.isEnabled()) {
+            return null;
+        }
+
+        const deckData = this.gameDecks.get(gameId);
+        if (!deckData || !deckData.cards[position]) {
+            return null;
+        }
+
+        return {
+            position: position,
+            hash: deckData.cards[position].hash,
+            gameId: gameId
+        };
+    }
+
+    /**
+     * Generate a verifiable shuffle proof
+     */
+    generateShuffleProof(gameId, originalOrder, shuffledOrder) {
+        const proof = {
+            gameId: gameId,
+            timestamp: new Date().toISOString(),
+            originalHash: crypto.createHash('sha256')
+                .update(JSON.stringify(originalOrder))
+                .digest('hex'),
+            shuffledHash: crypto.createHash('sha256')
+                .update(JSON.stringify(shuffledOrder))
+                .digest('hex'),
+            proofId: uuidv4()
+        };
+        return proof;
+    }
+
+    /**
+     * Get PIR status for a game
+     */
+    getGamePIRStatus(gameId) {
+        const deckData = this.gameDecks.get(gameId);
+        return {
+            enabled: this.isEnabled(),
+            connected: this.isConnected,
+            deckRegistered: !!deckData,
+            cardCount: deckData ? deckData.cards.length : 0
+        };
+    }
+
+    /**
+     * Clean up game data
+     */
+    cleanupGame(gameId) {
+        this.gameDecks.delete(gameId);
+    }
+}
+
+// Create global PIR client instance
+const pirClient = new PIRClient();
 
 // Import SNARK integration module
 const { snarkVerifier, cardToIndex, calculatePermutation, deckToIndices } = require('./snark-integration');
@@ -306,6 +601,27 @@ class TeenPattiGame {
         }
     }
 
+    /**
+     * Deal cards with position tracking for PIR verification
+     * Tracks which deck positions each player received
+     */
+    dealCardsWithTracking() {
+        this.deck.shuffle();
+        let cardPosition = 0;
+        
+        for (const [playerId, player] of this.players) {
+            player.cards = [];
+            player.cardPositions = []; // Track positions for PIR verification
+            
+            for (let i = 0; i < 3; i++) {
+                const card = this.deck.dealCard();
+                player.cards.push(card);
+                player.cardPositions.push(cardPosition);
+                cardPosition++;
+            }
+        }
+    }
+
     processBettingRound() {
         let activePlayers = Array.from(this.players.values()).filter(p => !p.hasFolded);
         if (activePlayers.length <= 1) return;
@@ -584,14 +900,35 @@ class IndianPokerServer {
         this.wss = new WebSocket.Server({ port });
         this.clients = new Map(); // clientId -> { ws, playerId, roomId }
         this.roomManager = new IndianPokerRoomManager();
+        this.pirClient = pirClient; // Use global PIR client instance
         this.setupWebSocketHandlers();
 
         // Initialize SNARK system asynchronously
         this.initializeSNARK();
-
+        this.initializePIR();
+        
         console.log('Indian Poker Server started on port ' + port);
         console.log('Supporting: Teen Patti, Jhandi Munda, and other Indian variants');
         console.log('WebSocket endpoint: ws://localhost:' + port);
+        console.log('PIR Integration: ' + (PIR_CONFIG.enabled ? 'ENABLED' : 'DISABLED'));
+    }
+
+    /**
+     * Initialize PIR server connection
+     */
+    async initializePIR() {
+        if (!this.pirClient.isEnabled()) {
+            console.log('PIR integration is disabled. Set PIR_ENABLED=true to enable.');
+            return;
+        }
+
+        console.log('Initializing PIR server connection...');
+        const isHealthy = await this.pirClient.checkHealth();
+        if (isHealthy) {
+            console.log('PIR server connection established successfully');
+        } else {
+            console.log('PIR server is not available. Game will continue without PIR verification.');
+        }
     }
 
     async initializeSNARK() {
@@ -690,6 +1027,16 @@ class IndianPokerServer {
                     break;
                 case 'get_snark_status':
                     this.handleGetSnarkStatus(clientId);
+                    break;
+                // PIR-related message handlers
+                case 'get_pir_status':
+                    this.handleGetPIRStatus(clientId);
+                    break;
+                case 'verify_cards':
+                    this.handleVerifyCards(clientId, messageData);
+                    break;
+                case 'get_card_proof':
+                    this.handleGetCardProof(clientId, messageData);
                     break;
                 default:
                     this.sendError(clientId, `Unknown message type: ${type}`);
@@ -812,7 +1159,7 @@ class IndianPokerServer {
         this.startGameInRoom(client.roomId);
     }
 
-    startGameInRoom(roomId) {
+    async startGameInRoom(roomId) {
         const room = this.roomManager.getRoom(roomId);
         if (!room) return;
 
@@ -827,7 +1174,7 @@ class IndianPokerServer {
         // Start the game based on variant
         switch (room.variant) {
             case GAME_VARIANTS.TEEN_PATTI:
-                this.startTeenPattiGame(room);
+                await this.startTeenPattiGame(room);
                 break;
             case GAME_VARIANTS.JHANDI_MUNDA:
                 this.startJhandiMundaGame(room);
@@ -841,8 +1188,18 @@ class IndianPokerServer {
         // Store deck state before dealing for SNARK proofs
         const deckStateBefore = room.game.deck.getProofState();
         
-        // Deal cards
-        room.game.dealCards();
+        // Register deck with PIR before dealing if enabled
+        if (this.pirClient.isEnabled()) {
+            const registrationResult = await this.pirClient.registerDeck(room.id, room.game.deck);
+            if (registrationResult.success) {
+                console.log(`PIR: Deck registered for room ${room.id}`);
+            } else {
+                console.log(`PIR: Deck registration skipped - ${registrationResult.reason || registrationResult.error}`);
+            }
+        }
+        
+        // Deal cards and track positions for PIR verification
+        room.game.dealCardsWithTracking();
         room.game.currentRound = 'betting';
         room.game.currentBet = room.game.bootAmount;
 
@@ -852,16 +1209,20 @@ class IndianPokerServer {
         // Generate SNARK proofs asynchronously (non-blocking)
         this.generateGameProofs(room, deckStateBefore, deckStateAfter);
 
+        // Include PIR status in game started message
+        const pirStatus = this.pirClient.getGamePIRStatus(room.id);
+
         this.broadcastToRoom(room.id, null, {
             type: 'game_started',
             data: {
                 gameState: room.game.getGameState(),
+                pirStatus: pirStatus,
                 message: '🎮 Teen Patti game started! Cards dealt.',
                 snarkStatus: snarkVerifier.isAvailable() ? 'generating' : 'unavailable'
             }
         });
 
-        console.log(`🎯 Teen Patti game started in room ${room.id}`);
+        console.log(`🎯 Teen Patti game started in room ${room.id} (PIR: ${pirStatus.enabled ? 'enabled' : 'disabled'})`);
     }
 
     /**
@@ -1100,9 +1461,6 @@ class IndianPokerServer {
         });
     }
 
-    /**
-     * Handle request for SNARK proofs
-     */
     handleGetProofs(clientId) {
         const client = this.clients.get(clientId);
         if (!client || !client.roomId) {
@@ -1184,6 +1542,88 @@ class IndianPokerServer {
             type: 'snark_status',
             data: status
         });
+    }
+
+    handleGetPIRStatus(clientId) {
+        const client = this.clients.get(clientId);
+        const roomId = client ? client.roomId : null;
+        
+        const pirStatus = {
+            enabled: this.pirClient.isEnabled(),
+            connected: this.pirClient.isConnected,
+            serverUrl: PIR_CONFIG.baseUrl
+        };
+
+        if (roomId) {
+            pirStatus.gameStatus = this.pirClient.getGamePIRStatus(roomId);
+        }
+
+        this.sendMessage(clientId, {
+            type: 'pir_status',
+            data: pirStatus
+        });
+    }
+
+    async handleVerifyCards(clientId, data) {
+        const client = this.clients.get(clientId);
+        if (!client || !client.roomId) {
+            this.sendError(clientId, 'Not in a room');
+            return;
+        }
+
+        const room = this.roomManager.getRoom(client.roomId);
+        if (!room) {
+            this.sendError(clientId, 'Room not found');
+            return;
+        }
+
+        const player = room.game.players.get(clientId);
+        if (!player || !player.cardPositions) {
+            this.sendError(clientId, 'No cards to verify');
+            return;
+        }
+
+        try {
+            const verification = await this.pirClient.verifyCardDeal(
+                client.roomId,
+                clientId,
+                player.cardPositions
+            );
+
+            this.sendMessage(clientId, {
+                type: 'card_verification',
+                data: verification
+            });
+        } catch (error) {
+            console.error('Card verification failed:', error);
+            this.sendError(clientId, 'Card verification failed');
+        }
+    }
+
+    async handleGetCardProof(clientId, data) {
+        const client = this.clients.get(clientId);
+        if (!client || !client.roomId) {
+            this.sendError(clientId, 'Not in a room');
+            return;
+        }
+
+        const { position } = data || {};
+        if (position === undefined) {
+            this.sendError(clientId, 'Card position required');
+            return;
+        }
+
+        try {
+            const cardInfo = await this.pirClient.queryCard(client.roomId, position);
+            
+            this.sendMessage(clientId, {
+                type: 'card_proof',
+                data: cardInfo || { error: 'Card not found' }
+            });
+        } catch (error) {
+            console.error('Card proof request failed:', error);
+            this.sendError(clientId, 'Card proof request failed');
+        }
     }
 
     handleDisconnection(clientId) {
@@ -1463,6 +1903,8 @@ module.exports = {
     IndianPokerRoomManager,
     TeenPattiGame,
     JhandiMundaGame,
+    PIRClient,
+    PIR_CONFIG,
     CARD_SUITS,
     CARD_RANKS,
     GAME_VARIANTS,

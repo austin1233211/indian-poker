@@ -11,7 +11,14 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=8080
+      - PIR_ENABLED=true
+      - PIR_SERVER_URL=http://pir-server:3000
+      - PIR_TIMEOUT=5000
+      - PIR_RETRY_ATTEMPTS=3
+      - PIR_RETRY_DELAY=1000
     restart: unless-stopped
+    depends_on:
+      - pir-server
     healthcheck:
       test: ["CMD", "node", "-e", "const ws = new (require('ws'))('ws://localhost:8080'); ws.on('open', () => process.exit(0)); ws.on('error', () => process.exit(1)); setTimeout(() => process.exit(1), 5000);"]
       interval: 30s
@@ -35,8 +42,6 @@ services:
     volumes:
       - pir-data:/app/data
     restart: unless-stopped
-    depends_on:
-      - indian-poker-server
 
 volumes:
   pir-data:

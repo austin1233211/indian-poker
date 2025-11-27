@@ -5,8 +5,9 @@ FROM rust:1.85 AS builder
 # Install clang (required by blst crate for BLS12-381 cryptography)
 RUN apt-get update && apt-get install -y clang curl && rm -rf /var/lib/apt/lists/*
 
-# Install wasm-pack
-RUN cargo install wasm-pack
+# Install wasm-pack from crates.io with --locked to use its lockfile
+# This avoids pulling newer dependency versions that require unreleased Rust versions
+RUN cargo install wasm-pack --version 0.13.1 --locked
 
 WORKDIR /app
 
