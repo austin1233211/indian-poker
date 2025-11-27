@@ -1,5 +1,6 @@
 # Stage 1: Build the WASM bundle
-FROM rust:1.80 AS builder
+# Using Rust 1.85+ for edition2024 support (required by wasm-pack dependencies)
+FROM rust:1.85 AS builder
 
 # Install clang (required by blst crate for BLS12-381 cryptography)
 RUN apt-get update && apt-get install -y clang curl && rm -rf /var/lib/apt/lists/*
