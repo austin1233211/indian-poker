@@ -15,6 +15,9 @@ COPY . .
 # Build the WASM module (outputs to web/pkg)
 RUN wasm-pack build --target web --release --out-dir web/pkg --out-name wasm_crypto
 
+# Copy benchmarks directory to web folder (required by demo.html)
+RUN cp -r benchmarks web/benchmarks
+
 # Stage 2: Serve static files
 FROM node:18-alpine AS runner
 
