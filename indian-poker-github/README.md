@@ -51,13 +51,62 @@ docker-compose up -d
 
 ## Railway Deployment
 
+### Quick Deploy
+
 1. Install Railway CLI: `npm install -g @railway/cli`
 2. Login: `railway login`
-3. Deploy:
+3. Deploy each service:
 ```bash
 cd indian-poker-server
 railway init
 railway up
+```
+
+### Service Configuration
+
+When deploying to Railway, configure the following environment variables for each service:
+
+**indian-poker-server:**
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `PORT` | `8080` | WebSocket server port |
+| `PIR_ENABLED` | `true` | Enable PIR integration |
+| `PIR_SERVER_URL` | `http://indian-poker.railway.internal:3000` | Internal URL to PIR server |
+
+**pir-server:**
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `PORT` | `3000` | API server port |
+| `DB_CLIENT` | `sqlite` | Database type |
+| `DB_PATH` | `/app/data/pir_server.db` | Database file path |
+| `ENCRYPTION_SECRET` | `<your-32-char-secret>` | Encryption key |
+| `JWT_SECRET` | `<your-32-char-secret>` | JWT signing secret |
+
+**Frontend:**
+- Update `frontend/index.html` with your public WebSocket URL (e.g., `wss://indian-poker-production.up.railway.app`)
+
+### Service Architecture on Railway
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Browser (Frontend)                                          │
+│  Connects via: wss://indian-poker-production.up.railway.app │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│  indian-poker-server (Port 8080)                            │
+│  - WebSocket game server                                     │
+│  - Integrates groth16-snark (local module)                  │
+│  - Connects to PIR server via internal URL                  │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼ (internal: indian-poker.railway.internal:3000)
+┌─────────────────────────────────────────────────────────────┐
+│  pir-server (Port 3000)                                     │
+│  - Private Information Retrieval API                        │
+│  - Card verification and privacy-preserving queries         │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ## Game Features
