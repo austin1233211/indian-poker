@@ -1171,7 +1171,8 @@ Happy Gaming! 🃏🎯
 // Export for external use
 if (require.main === module) {
     // Start the server if run directly
-    const server = new IndianPokerServer();
+    const port = process.env.PORT || 8080;
+    const server = new IndianPokerServer(port);
     
     // Keep the process running
     process.on('SIGINT', () => {
