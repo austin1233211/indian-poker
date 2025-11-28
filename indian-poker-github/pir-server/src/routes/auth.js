@@ -116,10 +116,19 @@ const authRoutes = (services) => {
     } catch (error) {
       logger.error('Registration failed:', error);
       
+      // Security: Don't reveal if email already exists (prevents account enumeration)
+      // Return a generic success-like message even if user exists
       if (error.message.includes('already exists')) {
-        return res.status(409).json({
-          error: 'User already exists',
-          code: 'USER_EXISTS',
+        // Log the actual error for debugging but return generic message
+        logger.security('REGISTRATION_DUPLICATE_EMAIL', {
+          email: req.body.email,
+          ip: logger.getClientIP(req)
+        });
+        
+        // Return same response as successful registration to prevent enumeration
+        return res.status(201).json({
+          success: true,
+          message: 'If this email is not already registered, a confirmation will be sent shortly.',
           timestamp: new Date().toISOString()
         });
       }

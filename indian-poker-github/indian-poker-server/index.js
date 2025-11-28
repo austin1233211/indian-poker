@@ -806,6 +806,15 @@ class IndianPokerRoomManager {
     constructor() {
         this.rooms = new Map();
         this.maxPlayersPerRoom = 6;
+        // Security: Limit total rooms to prevent memory exhaustion
+        this.maxTotalRooms = 100;
+    }
+
+    /**
+     * Security: Check if room creation limit is reached
+     */
+    canCreateRoom() {
+        return this.rooms.size < this.maxTotalRooms;
     }
 
     createRoom(variant = GAME_VARIANTS.TEEN_PATTI, roomName = null) {
@@ -1054,8 +1063,17 @@ class IndianPokerServer {
     }
 
     handleCreateRoom(clientId, data) {
+        // Security: Check room creation limit to prevent DoS
+        if (!this.roomManager.canCreateRoom()) {
+            this.sendError(clientId, 'Server room limit reached. Please try again later.');
+            return;
+        }
+
         const { variant, roomName } = data;
         const room = this.roomManager.createRoom(variant, roomName);
+
+        // Security: Track room creator for authorization
+        room.creatorId = clientId;
 
         this.sendMessage(clientId, {
             type: 'room_created',
@@ -1177,6 +1195,18 @@ class IndianPokerServer {
     handleStartGame(clientId) {
         const client = this.clients.get(clientId);
         if (!client || !client.roomId) return;
+
+        // Security: Only room creator can start the game
+        const room = this.roomManager.getRoom(client.roomId);
+        if (!room) {
+            this.sendError(clientId, 'Room not found');
+            return;
+        }
+
+        if (room.creatorId && room.creatorId !== clientId) {
+            this.sendError(clientId, 'Only the room creator can start the game');
+            return;
+        }
 
         this.startGameInRoom(client.roomId);
     }
@@ -1641,6 +1671,31 @@ class IndianPokerServer {
         const { position } = data || {};
         if (position === undefined) {
             this.sendError(clientId, 'Card position required');
+            return;
+        }
+
+        // Security: Validate position is a number
+        if (typeof position !== 'number' || !Number.isInteger(position) || position < 0) {
+            this.sendError(clientId, 'Invalid card position');
+            return;
+        }
+
+        // Security: Only allow querying your own card positions
+        const room = this.roomManager.getRoom(client.roomId);
+        if (!room) {
+            this.sendError(clientId, 'Room not found');
+            return;
+        }
+
+        const player = room.game.players.get(clientId);
+        if (!player || !player.cardPositions) {
+            this.sendError(clientId, 'No cards dealt to you');
+            return;
+        }
+
+        // Check if the requested position is one of the player's dealt cards
+        if (!player.cardPositions.includes(position)) {
+            this.sendError(clientId, 'You can only query your own card positions');
             return;
         }
 
