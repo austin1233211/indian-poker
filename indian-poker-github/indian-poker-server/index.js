@@ -318,10 +318,9 @@ const { snarkVerifier, cardToIndex, calculatePermutation, deckToIndices } = requ
 // Game Constants
 const CARD_SUITS = ['Hearts', 'Diamonds', 'Clubs', 'Spades'];
 const CARD_RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+// Only Blind Man's Bluff (1-card Indian Poker) is supported
 const GAME_VARIANTS = {
-    TEEN_PATTI: 'teen_patti',
-    JHANDI_MUNDA: 'jhandi_munda',
-    RUMLY: 'rumly'
+    BLIND_MANS_BLUFF: 'blind_mans_bluff'
 };
 
 // Indian Poker Hand Rankings (Teen Patti)
@@ -664,106 +663,7 @@ class TeenPattiGame {
 }
 
 /**
- * Jhandi Munda Game Logic (Card-based adaptation)
- */
-class JhandiMundaGame {
-    constructor(roomId) {
-        this.roomId = roomId;
-        this.players = new Map();
-        this.deck = new Deck();
-        this.pot = 0;
-        this.currentRound = 'betting';
-        this.numDice = 6; // Using cards to simulate dice positions
-        this.diceResults = [];
-    }
-
-    addPlayer(playerId, playerName, chips = 1000) {
-        const player = {
-            id: playerId,
-            name: playerName,
-            chips: chips,
-            bet: 0,
-            prediction: null,
-            hasFolded: false,
-            isActive: true,
-            joinedAt: Date.now()
-        };
-        this.players.set(playerId, player);
-        return player;
-    }
-
-    rollDice() {
-        this.diceResults = [];
-        for (let i = 0; i < this.numDice; i++) {
-            this.diceResults.push(Math.floor(Math.random() * 6) + 1);
-        }
-        return this.diceResults;
-    }
-
-    calculateWinMultiplier(prediction, actualResults) {
-        const count = actualResults.filter(result => result === prediction).length;
-        if (count === 0) return 0;
-        if (count === 1) return 1;
-        if (count === 2) return 2;
-        if (count === 3) return 3;
-        if (count === 4) return 12;
-        if (count === 5) return 45;
-        if (count === 6) return 150;
-        return 0;
-    }
-
-    processGame() {
-        const actualResults = this.rollDice();
-        let results = [];
-
-        for (const [playerId, player] of this.players) {
-            if (player.hasFolded || !player.prediction) continue;
-
-            const multiplier = this.calculateWinMultiplier(player.prediction, actualResults);
-            const winAmount = player.bet * multiplier;
-            player.chips += winAmount;
-
-            results.push({
-                playerId: playerId,
-                playerName: player.name,
-                prediction: player.prediction,
-                actualCount: actualResults.filter(r => r === player.prediction).length,
-                bet: player.bet,
-                winAmount: winAmount,
-                multiplier: multiplier
-            });
-        }
-
-        return {
-            diceResults: actualResults,
-            results: results,
-            totalPot: this.pot
-        };
-    }
-
-    getGameState() {
-        return {
-            roomId: this.roomId,
-            variant: GAME_VARIANTS.JHANDI_MUNDA,
-            pot: this.pot,
-            currentRound: this.currentRound,
-            diceResults: this.diceResults,
-            playerCount: this.players.size,
-            players: Array.from(this.players.values()).map(p => ({
-                id: p.id,
-                name: p.name,
-                chips: p.chips,
-                bet: p.bet,
-                prediction: p.prediction,
-                hasFolded: p.hasFolded,
-                isActive: p.isActive
-            }))
-        };
-    }
-}
-
-/**
- * Room Manager for Indian Poker Games
+ * Room Manager for Blind Man's Bluff (Indian Poker)
  */
 class IndianPokerRoomManager {
     constructor() {
@@ -780,12 +680,12 @@ class IndianPokerRoomManager {
         return this.rooms.size < this.maxTotalRooms;
     }
 
-    createRoom(variant = GAME_VARIANTS.TEEN_PATTI, roomName = null) {
+    createRoom(roomName = null) {
         const roomId = uuidv4().substr(0, 8);
         const room = {
             id: roomId,
             name: roomName || `Room ${roomId}`,
-            variant: variant,
+            variant: GAME_VARIANTS.BLIND_MANS_BLUFF,
             game: null,
             players: new Set(),
             maxPlayers: this.maxPlayersPerRoom,
@@ -798,17 +698,8 @@ class IndianPokerRoomManager {
             }
         };
 
-        // Initialize appropriate game
-        switch (variant) {
-            case GAME_VARIANTS.TEEN_PATTI:
-                room.game = new TeenPattiGame(roomId);
-                break;
-            case GAME_VARIANTS.JHANDI_MUNDA:
-                room.game = new JhandiMundaGame(roomId);
-                break;
-            default:
-                room.game = new TeenPattiGame(roomId);
-        }
+        // Initialize Blind Man's Bluff game (1-card Indian Poker)
+        room.game = new TeenPattiGame(roomId);
 
         this.rooms.set(roomId, room);
         return room;
@@ -859,13 +750,8 @@ class IndianPokerRoomManager {
         }));
     }
 
-    getGameTypeDisplayName(variant) {
-        const names = {
-            [GAME_VARIANTS.TEEN_PATTI]: 'Teen Patti',
-            [GAME_VARIANTS.JHANDI_MUNDA]: 'Jhandi Munda',
-            [GAME_VARIANTS.RUMLY]: 'Rumly'
-        };
-        return names[variant] || 'Unknown';
+    getGameTypeDisplayName() {
+        return 'Blind Man\'s Bluff';
     }
 }
 
@@ -1032,11 +918,7 @@ class IndianPokerServer {
             return;
         }
 
-        const { variant, roomName } = data;
-
-        // Security: Validate variant against whitelist
-        const validVariants = Object.values(GAME_VARIANTS);
-        const validatedVariant = validVariants.includes(variant) ? variant : GAME_VARIANTS.TEEN_PATTI;
+        const { roomName } = data;
 
         // Security: Sanitize room name (prevent XSS and limit length)
         let sanitizedRoomName = null;
@@ -1046,7 +928,7 @@ class IndianPokerServer {
                 .substring(0, 50); // Limit length
         }
 
-        const room = this.roomManager.createRoom(validatedVariant, sanitizedRoomName);
+        const room = this.roomManager.createRoom(sanitizedRoomName);
 
         // Security: Track room creator for authorization
         room.creatorId = clientId;
@@ -1060,12 +942,12 @@ class IndianPokerServer {
                     variant: room.variant,
                     playerCount: 0,
                     maxPlayers: room.maxPlayers,
-                    gameType: this.roomManager.getGameTypeDisplayName(room.variant)
+                    gameType: this.roomManager.getGameTypeDisplayName()
                 }
             }
         });
 
-        console.log(`🏠 Room created: ${room.id} (${room.variant})`);
+        console.log(`🏠 Room created: ${room.id} (Blind Man's Bluff)`);
     }
 
     handleListRooms(clientId) {
@@ -1199,18 +1081,11 @@ class IndianPokerServer {
             return;
         }
 
-        // Start the game based on variant
-        switch (room.variant) {
-            case GAME_VARIANTS.TEEN_PATTI:
-                await this.startTeenPattiGame(room);
-                break;
-            case GAME_VARIANTS.JHANDI_MUNDA:
-                this.startJhandiMundaGame(room);
-                break;
-        }
+        // Start Blind Man's Bluff game
+        await this.startBlindMansBluffGame(room);
     }
 
-    async startTeenPattiGame(room) {
+    async startBlindMansBluffGame(room) {
         room.game.currentRound = 'dealing';
         
         // Store deck state before dealing for SNARK proofs
@@ -1338,20 +1213,6 @@ class IndianPokerServer {
         } catch (error) {
             console.error(`Error generating SNARK proofs for game ${gameId}:`, error.message);
         }
-    }
-
-    startJhandiMundaGame(room) {
-        room.game.currentRound = 'betting';
-
-        this.broadcastToRoom(room.id, null, {
-            type: 'game_started',
-            data: {
-                gameState: room.game.getGameState(),
-                message: '🎮 Jhandi Munda game started! Place your predictions.'
-            }
-        });
-
-        console.log(`🎯 Jhandi Munda game started in room ${room.id}`);
     }
 
     handleMakeBet(clientId, data) {
