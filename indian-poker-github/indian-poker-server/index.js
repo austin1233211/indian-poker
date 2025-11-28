@@ -1033,7 +1033,20 @@ class IndianPokerServer {
         }
 
         const { variant, roomName } = data;
-        const room = this.roomManager.createRoom(variant, roomName);
+
+        // Security: Validate variant against whitelist
+        const validVariants = Object.values(GAME_VARIANTS);
+        const validatedVariant = validVariants.includes(variant) ? variant : GAME_VARIANTS.TEEN_PATTI;
+
+        // Security: Sanitize room name (prevent XSS and limit length)
+        let sanitizedRoomName = null;
+        if (roomName) {
+            sanitizedRoomName = String(roomName)
+                .replace(/[<>\"'&]/g, '') // Remove potentially dangerous characters
+                .substring(0, 50); // Limit length
+        }
+
+        const room = this.roomManager.createRoom(validatedVariant, sanitizedRoomName);
 
         // Security: Track room creator for authorization
         room.creatorId = clientId;
@@ -1408,6 +1421,13 @@ class IndianPokerServer {
 
         const player = room.game.players.get(clientId);
         if (!player) return;
+
+        // Security: Only allow show_cards during showdown phase
+        // In Indian Poker, players should NOT see their own card during betting
+        if (room.game.currentRound !== 'showdown') {
+            this.sendError(clientId, 'Cards can only be shown during showdown phase');
+            return;
+        }
 
         player.hasShown = true;
         player.handValue = room.game.evaluateHand(player.cards);
