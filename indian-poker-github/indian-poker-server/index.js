@@ -1680,22 +1680,18 @@ class IndianPokerServer {
             return;
         }
 
-        // Security: Only allow querying your own card positions
         const room = this.roomManager.getRoom(client.roomId);
         if (!room) {
             this.sendError(clientId, 'Room not found');
             return;
         }
 
-        const player = room.game.players.get(clientId);
-        if (!player || !player.cardPositions) {
-            this.sendError(clientId, 'No cards dealt to you');
-            return;
-        }
-
-        // Check if the requested position is one of the player's dealt cards
-        if (!player.cardPositions.includes(position)) {
-            this.sendError(clientId, 'You can only query your own card positions');
+        // Security: Block card proof queries during active gameplay
+        // In Indian Poker, players should NOT see any cards (including their own) during the game
+        // Card proofs are only allowed after the game ends for fairness verification
+        const activeGameStates = ['ante', 'dealing', 'betting'];
+        if (room.game && activeGameStates.includes(room.game.currentRound)) {
+            this.sendError(clientId, 'Card proofs are only available after the game ends');
             return;
         }
 
