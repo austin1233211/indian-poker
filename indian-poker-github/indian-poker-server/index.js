@@ -471,109 +471,32 @@ class TeenPattiGame {
         this.snarkEnabled = false; // Will be set when proofs are generated
     }
 
+    /**
+     * Evaluate hand for Indian Poker (1 card per player)
+     * Simply compares card values - highest card wins
+     * Ace is highest (14), 2 is lowest (2)
+     */
     evaluateHand(cards) {
-        const sortedCards = cards.sort((a, b) => b.getNumericValue() - a.getNumericValue());
-
-        // Check for Trail (Three of a kind)
-        if (sortedCards[0].rank === sortedCards[1].rank &&
-            sortedCards[1].rank === sortedCards[2].rank) {
+        if (!cards || cards.length === 0) {
             return {
-                type: 'trail',
-                value: TEEN_PATTI_HAND_RANKINGS.trail.value,
-                name: TEEN_PATTI_HAND_RANKINGS.trail.name,
-                cards: sortedCards,
-                tieBreaker: sortedCards[0].getNumericValue()
+                type: 'no_card',
+                value: 0,
+                name: 'No Card',
+                cards: [],
+                tieBreaker: 0
             };
         }
 
-        // Check for Pure Sequence (Straight flush)
-        if (this.isPureSequence(sortedCards)) {
-            return {
-                type: 'pure_sequence',
-                value: TEEN_PATTI_HAND_RANKINGS.pure_sequence.value,
-                name: TEEN_PATTI_HAND_RANKINGS.pure_sequence.name,
-                cards: sortedCards,
-                tieBreaker: sortedCards[0].getNumericValue()
-            };
-        }
-
-        // Check for Sequence (Straight)
-        if (this.isSequence(sortedCards)) {
-            return {
-                type: 'sequence',
-                value: TEEN_PATTI_HAND_RANKINGS.sequence.value,
-                name: TEEN_PATTI_HAND_RANKINGS.sequence.name,
-                cards: sortedCards,
-                tieBreaker: sortedCards[0].getNumericValue()
-            };
-        }
-
-        // Check for Color (Flush)
-        if (this.isColor(sortedCards)) {
-            return {
-                type: 'color',
-                value: TEEN_PATTI_HAND_RANKINGS.color.value,
-                name: TEEN_PATTI_HAND_RANKINGS.color.name,
-                cards: sortedCards,
-                tieBreaker: sortedCards[0].getNumericValue()
-            };
-        }
-
-        // Check for Pair
-        if (this.isPair(sortedCards)) {
-            const pairRank = this.getPairRank(sortedCards);
-            return {
-                type: 'pair',
-                value: TEEN_PATTI_HAND_RANKINGS.pair.value,
-                name: TEEN_PATTI_HAND_RANKINGS.pair.name,
-                cards: sortedCards,
-                tieBreaker: pairRank
-            };
-        }
-
-        // High Card
+        const card = cards[0];
+        const cardValue = card.getNumericValue();
+        
         return {
-            type: 'high_card',
-            value: TEEN_PATTI_HAND_RANKINGS.high_card.value,
-            name: TEEN_PATTI_HAND_RANKINGS.high_card.name,
-            cards: sortedCards,
-            tieBreaker: sortedCards[0].getNumericValue()
+            type: 'single_card',
+            value: cardValue,
+            name: card.getDisplayName(),
+            cards: [card],
+            tieBreaker: cardValue
         };
-    }
-
-    isPureSequence(cards) {
-        if (cards[0].suit !== cards[1].suit || cards[1].suit !== cards[2].suit) {
-            return false;
-        }
-        return this.isSequence(cards);
-    }
-
-    isSequence(cards) {
-        const values = cards.map(card => card.getNumericValue()).sort((a, b) => b - a);
-
-        // Check for A, 2, 3 (lowest sequence)
-        if (values[0] === 14 && values[1] === 3 && values[2] === 2) {
-            return true;
-        }
-
-        // Check for normal sequences
-        return (values[0] - values[1] === 1) && (values[1] - values[2] === 1);
-    }
-
-    isColor(cards) {
-        return cards[0].suit === cards[1].suit && cards[1].suit === cards[2].suit;
-    }
-
-    isPair(cards) {
-        return (cards[0].rank === cards[1].rank) ||
-               (cards[1].rank === cards[2].rank) ||
-               (cards[0].rank === cards[2].rank);
-    }
-
-    getPairRank(cards) {
-        if (cards[0].rank === cards[1].rank) return cards[0].getNumericValue();
-        if (cards[1].rank === cards[2].rank) return cards[1].getNumericValue();
-        return cards[0].getNumericValue();
     }
 
     addPlayer(playerId, playerName, chips = 1000) {
@@ -601,15 +524,15 @@ class TeenPattiGame {
         this.deck.shuffle();
         for (const [playerId, player] of this.players) {
             player.cards = [];
-            for (let i = 0; i < 3; i++) {
-                player.cards.push(this.deck.dealCard());
-            }
+            // Indian Poker: Each player gets 1 card
+            player.cards.push(this.deck.dealCard());
         }
     }
 
     /**
      * Deal cards with position tracking for PIR verification
      * Tracks which deck positions each player received
+     * Indian Poker: Each player gets 1 card
      */
     dealCardsWithTracking() {
         this.deck.shuffle();
@@ -619,12 +542,11 @@ class TeenPattiGame {
             player.cards = [];
             player.cardPositions = []; // Track positions for PIR verification
             
-            for (let i = 0; i < 3; i++) {
-                const card = this.deck.dealCard();
-                player.cards.push(card);
-                player.cardPositions.push(cardPosition);
-                cardPosition++;
-            }
+            // Indian Poker: Each player gets 1 card
+            const card = this.deck.dealCard();
+            player.cards.push(card);
+            player.cardPositions.push(cardPosition);
+            cardPosition++;
         }
     }
 
