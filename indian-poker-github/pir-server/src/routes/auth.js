@@ -41,8 +41,8 @@ const authRoutes = (services) => {
       .withMessage('Name can only contain letters, spaces, hyphens, and apostrophes'),
     body('role')
       .optional()
-      .isIn(['user', 'premium', 'admin'])
-      .withMessage('Invalid role specified')
+      .isIn(['user', 'premium'])
+      .withMessage('Invalid role specified. Admin accounts cannot be self-registered.')
   ];
 
   const validateLogin = [

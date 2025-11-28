@@ -397,11 +397,17 @@ class Deck {
         const originalOrder = [...this.cards];
 
         // Fisher-Yates shuffle with permutation tracking
+        // Security: Use crypto.randomBytes for cryptographically secure shuffling
         const shuffled = [...this.cards];
         const permutation = Array.from({ length: shuffled.length }, (_, i) => i);
 
         for (let i = shuffled.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
+            // Generate cryptographically secure random index
+            // Use rejection sampling to avoid modulo bias
+            const randomBytes = crypto.randomBytes(4);
+            const randomValue = randomBytes.readUInt32BE(0);
+            const j = randomValue % (i + 1);
+            
             // Swap cards
             [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
             // Track permutation
@@ -1080,8 +1086,24 @@ class IndianPokerServer {
         const { roomId, playerName, chips } = data;
         const client = this.clients.get(clientId);
 
+        // Security: Define chip limits to prevent abuse
+        const MIN_CHIPS = 100;
+        const MAX_CHIPS = 10000;
+        const DEFAULT_CHIPS = 1000;
+
+        // Security: Validate and sanitize chip count
+        let validatedChips = DEFAULT_CHIPS;
+        if (typeof chips === 'number' && Number.isFinite(chips)) {
+            validatedChips = Math.floor(Math.min(Math.max(chips, MIN_CHIPS), MAX_CHIPS));
+        }
+
+        // Security: Sanitize player name (prevent XSS and limit length)
+        const sanitizedName = String(playerName || 'Player')
+            .replace(/[<>\"'&]/g, '') // Remove potentially dangerous characters
+            .substring(0, 20); // Limit name length
+
         try {
-            const player = this.roomManager.joinRoom(roomId, clientId, playerName, chips);
+            const player = this.roomManager.joinRoom(roomId, clientId, sanitizedName, validatedChips);
             client.playerId = clientId;
             client.roomId = roomId;
 
@@ -1330,14 +1352,23 @@ class IndianPokerServer {
         const player = room.game.players.get(clientId);
         if (!player) return;
 
-        if (amount > player.chips) {
+        // Security: Validate bet amount is a positive number
+        if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
+            this.sendError(clientId, 'Invalid bet amount: must be a positive number');
+            return;
+        }
+
+        // Security: Ensure amount is an integer (no fractional chips)
+        const betAmount = Math.floor(amount);
+
+        if (betAmount > player.chips) {
             this.sendError(clientId, 'Insufficient chips');
             return;
         }
 
-        player.chips -= amount;
-        player.bet += amount;
-        room.game.pot += amount;
+        player.chips -= betAmount;
+        player.bet += betAmount;
+        room.game.pot += betAmount;
 
         this.broadcastToRoom(room.id, null, {
             type: 'bet_made',

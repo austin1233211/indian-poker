@@ -298,11 +298,18 @@ class AuthenticationService {
    * @returns {boolean} True if password is correct
    */
   async verifyPassword(user, password) {
-    // This should be implemented using the encryption service
-    // For now, we'll assume password verification is handled elsewhere
-    // In a real implementation, you'd decrypt the stored password hash
-    // and compare it with the provided password
-    return true; // Placeholder
+    // Verify password using bcrypt comparison via encryption service
+    if (!user || !user.password || !password) {
+      return false;
+    }
+    
+    try {
+      // Use the encryption service to verify the password against the stored hash
+      return await this.encryption.verifyPassword(password, user.password);
+    } catch (error) {
+      this.logger.error('Password verification error:', error);
+      return false;
+    }
   }
 
   /**
