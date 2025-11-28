@@ -676,9 +676,50 @@ class TeenPattiGame {
                 hasFolded: p.hasFolded,
                 isActive: p.isActive,
                 joinedAt: p.joinedAt
-                // Cards are not sent to other players
             })),
-            // SNARK verification info
+            snarkEnabled: this.snarkEnabled,
+            gameId: this.gameId,
+            hasProofs: {
+                shuffle: this.proofs.shuffle !== null,
+                dealing: this.proofs.dealing !== null
+            }
+        };
+    }
+
+    /**
+     * Get personalized game state for Indian Poker mechanics
+     * Each player sees OTHER players' cards but NOT their own card
+     * This is the core mechanic of Indian Poker / Blind Man's Bluff
+     */
+    getGameStateForClient(clientId) {
+        return {
+            roomId: this.roomId,
+            variant: GAME_VARIANTS.TEEN_PATTI,
+            pot: this.pot,
+            currentBet: this.currentBet,
+            currentRound: this.currentRound,
+            playerCount: this.players.size,
+            players: Array.from(this.players.values()).map(p => {
+                const playerData = {
+                    id: p.id,
+                    name: p.name,
+                    chips: p.chips,
+                    bet: p.bet,
+                    hasFolded: p.hasFolded,
+                    isActive: p.isActive,
+                    joinedAt: p.joinedAt
+                };
+                
+                // Indian Poker mechanic: show OTHER players' cards, hide your own
+                if (p.id !== clientId && p.cards && p.cards.length > 0) {
+                    playerData.cards = p.cards.map(card => card.getDisplayName());
+                } else if (p.id === clientId) {
+                    playerData.cards = null; // Your own cards are hidden from you
+                    playerData.cardCount = p.cards ? p.cards.length : 0;
+                }
+                
+                return playerData;
+            }),
             snarkEnabled: this.snarkEnabled,
             gameId: this.gameId,
             hasProofs: {
@@ -1264,17 +1305,23 @@ class IndianPokerServer {
         // Include PIR status in game started message
         const pirStatus = this.pirClient.getGamePIRStatus(room.id);
 
-        this.broadcastToRoom(room.id, null, {
-            type: 'game_started',
-            data: {
-                gameState: room.game.getGameState(),
-                pirStatus: pirStatus,
-                message: '🎮 Teen Patti game started! Cards dealt.',
-                snarkStatus: snarkVerifier.isAvailable() ? 'generating' : 'unavailable'
+        // Indian Poker: Send personalized game state to each player
+        // Each player sees OTHER players' cards but NOT their own
+        for (const [clientId, client] of this.clients) {
+            if (client.roomId === room.id) {
+                this.sendMessage(clientId, {
+                    type: 'game_started',
+                    data: {
+                        gameState: room.game.getGameStateForClient(clientId),
+                        pirStatus: pirStatus,
+                        message: '🎮 Indian Poker game started! You can see other players\' cards but not your own.',
+                        snarkStatus: snarkVerifier.isAvailable() ? 'generating' : 'unavailable'
+                    }
+                });
             }
-        });
+        }
 
-        console.log(`🎯 Teen Patti game started in room ${room.id} (PIR: ${pirStatus.enabled ? 'enabled' : 'disabled'})`);
+        console.log(`🎯 Indian Poker game started in room ${room.id} (PIR: ${pirStatus.enabled ? 'enabled' : 'disabled'})`);
     }
 
     /**
@@ -1400,17 +1447,14 @@ class IndianPokerServer {
         player.bet += betAmount;
         room.game.pot += betAmount;
 
-        this.broadcastToRoom(room.id, null, {
-            type: 'bet_made',
-            data: {
-                playerId: clientId,
-                playerName: player.name,
-                amount: amount,
-                gameState: room.game.getGameState()
-            }
+        // Indian Poker: Send personalized game state to each player
+        this.broadcastPersonalizedGameState(room, 'bet_made', {
+            playerId: clientId,
+            playerName: player.name,
+            amount: betAmount
         });
 
-        console.log(`💰 ${player.name} bet ${amount} in room ${room.id}`);
+        console.log(`💰 ${player.name} bet ${betAmount} in room ${room.id}`);
     }
 
     handleFold(clientId) {
@@ -1424,13 +1468,10 @@ class IndianPokerServer {
 
         player.hasFolded = true;
 
-        this.broadcastToRoom(room.id, null, {
-            type: 'player_folded',
-            data: {
-                playerId: clientId,
-                playerName: player.name,
-                gameState: room.game.getGameState()
-            }
+        // Indian Poker: Send personalized game state to each player
+        this.broadcastPersonalizedGameState(room, 'player_folded', {
+            playerId: clientId,
+            playerName: player.name
         });
 
         // Check if game should end
@@ -1516,9 +1557,14 @@ class IndianPokerServer {
         const room = this.roomManager.getRoom(client.roomId);
         if (!room) return;
 
+        // Indian Poker: Return personalized game state (see others' cards, not your own)
+        const gameState = room.game.getGameStateForClient 
+            ? room.game.getGameStateForClient(clientId)
+            : room.game.getGameState();
+
         this.sendMessage(clientId, {
             type: 'game_state',
-            data: { gameState: room.game.getGameState() }
+            data: { gameState }
         });
     }
 
@@ -1728,6 +1774,28 @@ class IndianPokerServer {
         for (const [clientId, client] of this.clients) {
             if (client.roomId === roomId && clientId !== excludeClientId) {
                 this.sendMessage(clientId, message);
+            }
+        }
+    }
+
+    /**
+     * Broadcast personalized game state to all players in a room
+     * Each player sees OTHER players' cards but NOT their own (Indian Poker mechanic)
+     */
+    broadcastPersonalizedGameState(room, messageType, additionalData = {}) {
+        if (!room.game || typeof room.game.getGameStateForClient !== 'function') {
+            return;
+        }
+        
+        for (const [clientId, client] of this.clients) {
+            if (client.roomId === room.id) {
+                this.sendMessage(clientId, {
+                    type: messageType,
+                    data: {
+                        ...additionalData,
+                        gameState: room.game.getGameStateForClient(clientId)
+                    }
+                });
             }
         }
     }
