@@ -249,6 +249,23 @@ class AuthenticationService {
         });
       }
 
+      // Security: Re-check if user is still active in database
+      // This prevents deactivated users from using existing tokens
+      const users = await this.database.query('users', {
+        where: { id: session.user_id, is_active: true }
+      });
+
+      if (users.length === 0) {
+        // User was deactivated, invalidate the session
+        this.sessions.delete(token);
+        this.tokenBlacklist.add(token);
+        return res.status(401).json({
+          error: 'User account is deactivated',
+          code: 'ACCOUNT_DEACTIVATED',
+          timestamp: new Date().toISOString()
+        });
+      }
+
       // Attach session to request
       req.user = session;
       req.token = token;

@@ -19,16 +19,26 @@ class EncryptionService {
 
   /**
    * Get or generate master encryption key
+   * Security: In production, ENCRYPTION_SECRET must be set to prevent data loss
    */
   getMasterKey() {
     const secret = process.env.ENCRYPTION_SECRET;
+    const isProduction = process.env.NODE_ENV === 'production';
+    
     if (secret && secret.length >= 32) {
       return Buffer.from(secret, 'utf8').slice(0, 32);
     }
     
-    // Generate random key if no secret provided
+    // Security: Fail fast in production if no encryption secret is provided
+    if (isProduction) {
+      throw new Error('ENCRYPTION_SECRET environment variable must be set in production (minimum 32 characters)');
+    }
+    
+    // Generate random key only in development (data will be lost on restart)
     if (!secret) {
       this.logger.warn('No ENCRYPTION_SECRET provided, using generated key (data will be lost on restart)');
+    } else if (secret.length < 32) {
+      this.logger.warn('ENCRYPTION_SECRET is too short (minimum 32 characters), using generated key');
     }
     
     return crypto.randomBytes(32);
@@ -46,15 +56,15 @@ class EncryptionService {
         throw new Error('No data provided for encryption');
       }
 
-      // Generate random IV and salt
-      const iv = crypto.randomBytes(16);
+      // Generate random IV (12 bytes for GCM) and salt
+      const iv = crypto.randomBytes(12);
       const salt = crypto.randomBytes(32);
       
       // Derive key using context for additional security
       const derivedKey = this.deriveKey(salt, context);
       
-      // Create cipher
-      const cipher = crypto.createCipher(this.algorithm, derivedKey);
+      // Security: Use createCipheriv instead of deprecated createCipher
+      const cipher = crypto.createCipheriv(this.algorithm, derivedKey, iv);
       cipher.setAAD(Buffer.from(context, 'utf8'));
       
       // Encrypt the data
@@ -66,7 +76,7 @@ class EncryptionService {
       
       // Package encrypted data with metadata
       const result = {
-        v: '1', // version
+        v: '2', // version 2 uses createCipheriv
         alg: this.algorithm,
         iv: iv.toString('hex'),
         salt: salt.toString('hex'),
@@ -112,8 +122,8 @@ class EncryptionService {
       // Derive the same key
       const derivedKey = this.deriveKey(salt, context);
       
-      // Create decipher
-      const decipher = crypto.createDecipher(this.algorithm, derivedKey);
+      // Security: Use createDecipheriv instead of deprecated createDecipher
+      const decipher = crypto.createDecipheriv(this.algorithm, derivedKey, iv);
       decipher.setAAD(Buffer.from(context, 'utf8'));
       decipher.setAuthTag(authTag);
       

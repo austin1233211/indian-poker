@@ -471,109 +471,32 @@ class TeenPattiGame {
         this.snarkEnabled = false; // Will be set when proofs are generated
     }
 
+    /**
+     * Evaluate hand for Indian Poker (1 card per player)
+     * Simply compares card values - highest card wins
+     * Ace is highest (14), 2 is lowest (2)
+     */
     evaluateHand(cards) {
-        const sortedCards = cards.sort((a, b) => b.getNumericValue() - a.getNumericValue());
-
-        // Check for Trail (Three of a kind)
-        if (sortedCards[0].rank === sortedCards[1].rank &&
-            sortedCards[1].rank === sortedCards[2].rank) {
+        if (!cards || cards.length === 0) {
             return {
-                type: 'trail',
-                value: TEEN_PATTI_HAND_RANKINGS.trail.value,
-                name: TEEN_PATTI_HAND_RANKINGS.trail.name,
-                cards: sortedCards,
-                tieBreaker: sortedCards[0].getNumericValue()
+                type: 'no_card',
+                value: 0,
+                name: 'No Card',
+                cards: [],
+                tieBreaker: 0
             };
         }
 
-        // Check for Pure Sequence (Straight flush)
-        if (this.isPureSequence(sortedCards)) {
-            return {
-                type: 'pure_sequence',
-                value: TEEN_PATTI_HAND_RANKINGS.pure_sequence.value,
-                name: TEEN_PATTI_HAND_RANKINGS.pure_sequence.name,
-                cards: sortedCards,
-                tieBreaker: sortedCards[0].getNumericValue()
-            };
-        }
-
-        // Check for Sequence (Straight)
-        if (this.isSequence(sortedCards)) {
-            return {
-                type: 'sequence',
-                value: TEEN_PATTI_HAND_RANKINGS.sequence.value,
-                name: TEEN_PATTI_HAND_RANKINGS.sequence.name,
-                cards: sortedCards,
-                tieBreaker: sortedCards[0].getNumericValue()
-            };
-        }
-
-        // Check for Color (Flush)
-        if (this.isColor(sortedCards)) {
-            return {
-                type: 'color',
-                value: TEEN_PATTI_HAND_RANKINGS.color.value,
-                name: TEEN_PATTI_HAND_RANKINGS.color.name,
-                cards: sortedCards,
-                tieBreaker: sortedCards[0].getNumericValue()
-            };
-        }
-
-        // Check for Pair
-        if (this.isPair(sortedCards)) {
-            const pairRank = this.getPairRank(sortedCards);
-            return {
-                type: 'pair',
-                value: TEEN_PATTI_HAND_RANKINGS.pair.value,
-                name: TEEN_PATTI_HAND_RANKINGS.pair.name,
-                cards: sortedCards,
-                tieBreaker: pairRank
-            };
-        }
-
-        // High Card
+        const card = cards[0];
+        const cardValue = card.getNumericValue();
+        
         return {
-            type: 'high_card',
-            value: TEEN_PATTI_HAND_RANKINGS.high_card.value,
-            name: TEEN_PATTI_HAND_RANKINGS.high_card.name,
-            cards: sortedCards,
-            tieBreaker: sortedCards[0].getNumericValue()
+            type: 'single_card',
+            value: cardValue,
+            name: card.getDisplayName(),
+            cards: [card],
+            tieBreaker: cardValue
         };
-    }
-
-    isPureSequence(cards) {
-        if (cards[0].suit !== cards[1].suit || cards[1].suit !== cards[2].suit) {
-            return false;
-        }
-        return this.isSequence(cards);
-    }
-
-    isSequence(cards) {
-        const values = cards.map(card => card.getNumericValue()).sort((a, b) => b - a);
-
-        // Check for A, 2, 3 (lowest sequence)
-        if (values[0] === 14 && values[1] === 3 && values[2] === 2) {
-            return true;
-        }
-
-        // Check for normal sequences
-        return (values[0] - values[1] === 1) && (values[1] - values[2] === 1);
-    }
-
-    isColor(cards) {
-        return cards[0].suit === cards[1].suit && cards[1].suit === cards[2].suit;
-    }
-
-    isPair(cards) {
-        return (cards[0].rank === cards[1].rank) ||
-               (cards[1].rank === cards[2].rank) ||
-               (cards[0].rank === cards[2].rank);
-    }
-
-    getPairRank(cards) {
-        if (cards[0].rank === cards[1].rank) return cards[0].getNumericValue();
-        if (cards[1].rank === cards[2].rank) return cards[1].getNumericValue();
-        return cards[0].getNumericValue();
     }
 
     addPlayer(playerId, playerName, chips = 1000) {
@@ -601,15 +524,15 @@ class TeenPattiGame {
         this.deck.shuffle();
         for (const [playerId, player] of this.players) {
             player.cards = [];
-            for (let i = 0; i < 3; i++) {
-                player.cards.push(this.deck.dealCard());
-            }
+            // Indian Poker: Each player gets 1 card
+            player.cards.push(this.deck.dealCard());
         }
     }
 
     /**
      * Deal cards with position tracking for PIR verification
      * Tracks which deck positions each player received
+     * Indian Poker: Each player gets 1 card
      */
     dealCardsWithTracking() {
         this.deck.shuffle();
@@ -619,12 +542,11 @@ class TeenPattiGame {
             player.cards = [];
             player.cardPositions = []; // Track positions for PIR verification
             
-            for (let i = 0; i < 3; i++) {
-                const card = this.deck.dealCard();
-                player.cards.push(card);
-                player.cardPositions.push(cardPosition);
-                cardPosition++;
-            }
+            // Indian Poker: Each player gets 1 card
+            const card = this.deck.dealCard();
+            player.cards.push(card);
+            player.cardPositions.push(cardPosition);
+            cardPosition++;
         }
     }
 
@@ -676,9 +598,50 @@ class TeenPattiGame {
                 hasFolded: p.hasFolded,
                 isActive: p.isActive,
                 joinedAt: p.joinedAt
-                // Cards are not sent to other players
             })),
-            // SNARK verification info
+            snarkEnabled: this.snarkEnabled,
+            gameId: this.gameId,
+            hasProofs: {
+                shuffle: this.proofs.shuffle !== null,
+                dealing: this.proofs.dealing !== null
+            }
+        };
+    }
+
+    /**
+     * Get personalized game state for Indian Poker mechanics
+     * Each player sees OTHER players' cards but NOT their own card
+     * This is the core mechanic of Indian Poker / Blind Man's Bluff
+     */
+    getGameStateForClient(clientId) {
+        return {
+            roomId: this.roomId,
+            variant: GAME_VARIANTS.TEEN_PATTI,
+            pot: this.pot,
+            currentBet: this.currentBet,
+            currentRound: this.currentRound,
+            playerCount: this.players.size,
+            players: Array.from(this.players.values()).map(p => {
+                const playerData = {
+                    id: p.id,
+                    name: p.name,
+                    chips: p.chips,
+                    bet: p.bet,
+                    hasFolded: p.hasFolded,
+                    isActive: p.isActive,
+                    joinedAt: p.joinedAt
+                };
+                
+                // Indian Poker mechanic: show OTHER players' cards, hide your own
+                if (p.id !== clientId && p.cards && p.cards.length > 0) {
+                    playerData.cards = p.cards.map(card => card.getDisplayName());
+                } else if (p.id === clientId) {
+                    playerData.cards = null; // Your own cards are hidden from you
+                    playerData.cardCount = p.cards ? p.cards.length : 0;
+                }
+                
+                return playerData;
+            }),
             snarkEnabled: this.snarkEnabled,
             gameId: this.gameId,
             hasProofs: {
@@ -806,6 +769,15 @@ class IndianPokerRoomManager {
     constructor() {
         this.rooms = new Map();
         this.maxPlayersPerRoom = 6;
+        // Security: Limit total rooms to prevent memory exhaustion
+        this.maxTotalRooms = 100;
+    }
+
+    /**
+     * Security: Check if room creation limit is reached
+     */
+    canCreateRoom() {
+        return this.rooms.size < this.maxTotalRooms;
     }
 
     createRoom(variant = GAME_VARIANTS.TEEN_PATTI, roomName = null) {
@@ -1054,8 +1026,17 @@ class IndianPokerServer {
     }
 
     handleCreateRoom(clientId, data) {
+        // Security: Check room creation limit to prevent DoS
+        if (!this.roomManager.canCreateRoom()) {
+            this.sendError(clientId, 'Server room limit reached. Please try again later.');
+            return;
+        }
+
         const { variant, roomName } = data;
         const room = this.roomManager.createRoom(variant, roomName);
+
+        // Security: Track room creator for authorization
+        room.creatorId = clientId;
 
         this.sendMessage(clientId, {
             type: 'room_created',
@@ -1178,6 +1159,18 @@ class IndianPokerServer {
         const client = this.clients.get(clientId);
         if (!client || !client.roomId) return;
 
+        // Security: Only room creator can start the game
+        const room = this.roomManager.getRoom(client.roomId);
+        if (!room) {
+            this.sendError(clientId, 'Room not found');
+            return;
+        }
+
+        if (room.creatorId && room.creatorId !== clientId) {
+            this.sendError(clientId, 'Only the room creator can start the game');
+            return;
+        }
+
         this.startGameInRoom(client.roomId);
     }
 
@@ -1234,17 +1227,23 @@ class IndianPokerServer {
         // Include PIR status in game started message
         const pirStatus = this.pirClient.getGamePIRStatus(room.id);
 
-        this.broadcastToRoom(room.id, null, {
-            type: 'game_started',
-            data: {
-                gameState: room.game.getGameState(),
-                pirStatus: pirStatus,
-                message: '🎮 Teen Patti game started! Cards dealt.',
-                snarkStatus: snarkVerifier.isAvailable() ? 'generating' : 'unavailable'
+        // Indian Poker: Send personalized game state to each player
+        // Each player sees OTHER players' cards but NOT their own
+        for (const [clientId, client] of this.clients) {
+            if (client.roomId === room.id) {
+                this.sendMessage(clientId, {
+                    type: 'game_started',
+                    data: {
+                        gameState: room.game.getGameStateForClient(clientId),
+                        pirStatus: pirStatus,
+                        message: '🎮 Indian Poker game started! You can see other players\' cards but not your own.',
+                        snarkStatus: snarkVerifier.isAvailable() ? 'generating' : 'unavailable'
+                    }
+                });
             }
-        });
+        }
 
-        console.log(`🎯 Teen Patti game started in room ${room.id} (PIR: ${pirStatus.enabled ? 'enabled' : 'disabled'})`);
+        console.log(`🎯 Indian Poker game started in room ${room.id} (PIR: ${pirStatus.enabled ? 'enabled' : 'disabled'})`);
     }
 
     /**
@@ -1370,17 +1369,14 @@ class IndianPokerServer {
         player.bet += betAmount;
         room.game.pot += betAmount;
 
-        this.broadcastToRoom(room.id, null, {
-            type: 'bet_made',
-            data: {
-                playerId: clientId,
-                playerName: player.name,
-                amount: amount,
-                gameState: room.game.getGameState()
-            }
+        // Indian Poker: Send personalized game state to each player
+        this.broadcastPersonalizedGameState(room, 'bet_made', {
+            playerId: clientId,
+            playerName: player.name,
+            amount: betAmount
         });
 
-        console.log(`💰 ${player.name} bet ${amount} in room ${room.id}`);
+        console.log(`💰 ${player.name} bet ${betAmount} in room ${room.id}`);
     }
 
     handleFold(clientId) {
@@ -1394,13 +1390,10 @@ class IndianPokerServer {
 
         player.hasFolded = true;
 
-        this.broadcastToRoom(room.id, null, {
-            type: 'player_folded',
-            data: {
-                playerId: clientId,
-                playerName: player.name,
-                gameState: room.game.getGameState()
-            }
+        // Indian Poker: Send personalized game state to each player
+        this.broadcastPersonalizedGameState(room, 'player_folded', {
+            playerId: clientId,
+            playerName: player.name
         });
 
         // Check if game should end
@@ -1486,9 +1479,14 @@ class IndianPokerServer {
         const room = this.roomManager.getRoom(client.roomId);
         if (!room) return;
 
+        // Indian Poker: Return personalized game state (see others' cards, not your own)
+        const gameState = room.game.getGameStateForClient 
+            ? room.game.getGameStateForClient(clientId)
+            : room.game.getGameState();
+
         this.sendMessage(clientId, {
             type: 'game_state',
-            data: { gameState: room.game.getGameState() }
+            data: { gameState }
         });
     }
 
@@ -1644,6 +1642,27 @@ class IndianPokerServer {
             return;
         }
 
+        // Security: Validate position is a number
+        if (typeof position !== 'number' || !Number.isInteger(position) || position < 0) {
+            this.sendError(clientId, 'Invalid card position');
+            return;
+        }
+
+        const room = this.roomManager.getRoom(client.roomId);
+        if (!room) {
+            this.sendError(clientId, 'Room not found');
+            return;
+        }
+
+        // Security: Block card proof queries during active gameplay
+        // In Indian Poker, players should NOT see any cards (including their own) during the game
+        // Card proofs are only allowed after the game ends for fairness verification
+        const activeGameStates = ['ante', 'dealing', 'betting'];
+        if (room.game && activeGameStates.includes(room.game.currentRound)) {
+            this.sendError(clientId, 'Card proofs are only available after the game ends');
+            return;
+        }
+
         try {
             const cardInfo = await this.pirClient.queryCard(client.roomId, position);
             
@@ -1677,6 +1696,28 @@ class IndianPokerServer {
         for (const [clientId, client] of this.clients) {
             if (client.roomId === roomId && clientId !== excludeClientId) {
                 this.sendMessage(clientId, message);
+            }
+        }
+    }
+
+    /**
+     * Broadcast personalized game state to all players in a room
+     * Each player sees OTHER players' cards but NOT their own (Indian Poker mechanic)
+     */
+    broadcastPersonalizedGameState(room, messageType, additionalData = {}) {
+        if (!room.game || typeof room.game.getGameStateForClient !== 'function') {
+            return;
+        }
+        
+        for (const [clientId, client] of this.clients) {
+            if (client.roomId === room.id) {
+                this.sendMessage(clientId, {
+                    type: messageType,
+                    data: {
+                        ...additionalData,
+                        gameState: room.game.getGameStateForClient(clientId)
+                    }
+                });
             }
         }
     }
