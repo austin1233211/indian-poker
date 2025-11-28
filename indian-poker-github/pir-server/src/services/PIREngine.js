@@ -495,6 +495,19 @@ class PIREngine {
   }
 
   /**
+   * Check if user has one of the required roles
+   * @param {object} session - User session
+   * @param {Array} requiredRoles - Array of roles that grant access
+   * @returns {boolean} True if user has one of the required roles
+   */
+  hasRole(session, requiredRoles) {
+    if (!session || !session.role || !Array.isArray(requiredRoles)) {
+      return false;
+    }
+    return requiredRoles.includes(session.role);
+  }
+
+  /**
    * Check if user has specific permission
    * @param {object} session - User session
    * @param {string} permission - Permission to check
