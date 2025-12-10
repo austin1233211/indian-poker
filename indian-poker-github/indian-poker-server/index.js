@@ -761,7 +761,20 @@ class IndianPokerRoomManager {
 class IndianPokerServer {
     constructor(port = 8080) {
         this.port = port;
-        this.wss = new WebSocket.Server({ port });
+        
+        // Create HTTP server for health checks (required for Railway deployment)
+        this.httpServer = http.createServer((req, res) => {
+            if (req.url === '/' || req.url === '/health') {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ status: 'ok', service: 'indian-poker-server' }));
+            } else {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Not Found' }));
+            }
+        });
+        
+        // Attach WebSocket server to HTTP server
+        this.wss = new WebSocket.Server({ server: this.httpServer });
         this.clients = new Map(); // clientId -> { ws, playerId, roomId }
         this.roomManager = new IndianPokerRoomManager();
         this.pirClient = pirClient; // Use global PIR client instance
@@ -771,10 +784,13 @@ class IndianPokerServer {
         this.initializeSNARK();
         this.initializePIR();
         
-        console.log('Indian Poker Server started on port ' + port);
-        console.log('Supporting: Teen Patti, Jhandi Munda, and other Indian variants');
-        console.log('WebSocket endpoint: ws://localhost:' + port);
-        console.log('PIR Integration: ' + (PIR_CONFIG.enabled ? 'ENABLED' : 'DISABLED'));
+        // Start listening on the HTTP server
+        this.httpServer.listen(port, () => {
+            console.log('Indian Poker Server started on port ' + port);
+            console.log('Health check endpoint: http://localhost:' + port + '/health');
+            console.log('WebSocket endpoint: ws://localhost:' + port);
+            console.log('PIR Integration: ' + (PIR_CONFIG.enabled ? 'ENABLED' : 'DISABLED'));
+        });
     }
 
     /**
@@ -1855,7 +1871,6 @@ module.exports = {
     IndianPokerServer,
     IndianPokerRoomManager,
     TeenPattiGame,
-    JhandiMundaGame,
     PIRClient,
     PIR_CONFIG,
     CARD_SUITS,
