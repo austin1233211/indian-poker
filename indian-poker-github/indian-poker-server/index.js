@@ -584,7 +584,7 @@ class TeenPattiGame {
     getGameState() {
         return {
             roomId: this.roomId,
-            variant: GAME_VARIANTS.TEEN_PATTI,
+            variant: GAME_VARIANTS.BLIND_MANS_BLUFF,
             pot: this.pot,
             currentBet: this.currentBet,
             currentRound: this.currentRound,
@@ -615,7 +615,7 @@ class TeenPattiGame {
     getGameStateForClient(clientId) {
         return {
             roomId: this.roomId,
-            variant: GAME_VARIANTS.TEEN_PATTI,
+            variant: GAME_VARIANTS.BLIND_MANS_BLUFF,
             pot: this.pot,
             currentBet: this.currentBet,
             currentRound: this.currentRound,
@@ -1000,6 +1000,7 @@ class IndianPokerServer {
             client.roomId = roomId;
 
             // Send room and game state to the joining player
+            // Security: Use getGameStateForClient to prevent card leaks
             const room = this.roomManager.getRoom(roomId);
             this.sendMessage(clientId, {
                 type: 'room_joined',
@@ -1010,7 +1011,7 @@ class IndianPokerServer {
                         variant: room.variant,
                         gameType: this.roomManager.getGameTypeDisplayName(room.variant)
                     },
-                    gameState: room.game.getGameState(),
+                    gameState: room.game.getGameStateForClient(clientId),
                     player: {
                         id: player.id,
                         name: player.name,
@@ -1020,17 +1021,22 @@ class IndianPokerServer {
             });
 
             // Notify other players in the room
-            this.broadcastToRoom(roomId, clientId, {
-                type: 'player_joined',
-                data: {
-                    player: {
-                        id: player.id,
-                        name: player.name,
-                        chips: player.chips
-                    },
-                    roomState: room.game.getGameState()
+            // Security: Each player gets personalized game state to prevent card leaks
+            for (const [otherClientId, otherClient] of this.clients) {
+                if (otherClient.roomId === roomId && otherClientId !== clientId) {
+                    this.sendMessage(otherClientId, {
+                        type: 'player_joined',
+                        data: {
+                            player: {
+                                id: player.id,
+                                name: player.name,
+                                chips: player.chips
+                            },
+                            roomState: room.game.getGameStateForClient(otherClientId)
+                        }
+                    });
                 }
-            });
+            }
 
             console.log(`👤 ${playerName} joined room ${roomId}`);
 
@@ -1241,6 +1247,18 @@ class IndianPokerServer {
         const player = room.game.players.get(clientId);
         if (!player) return;
 
+        // Security: Only allow betting during the betting phase
+        if (room.game.currentRound !== 'betting') {
+            this.sendError(clientId, 'Betting is only allowed during the betting phase');
+            return;
+        }
+
+        // Security: Player must not have already folded
+        if (player.hasFolded) {
+            this.sendError(clientId, 'You have already folded');
+            return;
+        }
+
         // Security: Validate bet amount is a positive number
         if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
             this.sendError(clientId, 'Invalid bet amount: must be a positive number');
@@ -1250,6 +1268,12 @@ class IndianPokerServer {
         // Security: Ensure amount is an integer (no fractional chips)
         const betAmount = Math.floor(amount);
 
+        // Security: Enforce minimum bet (must match or exceed current bet)
+        if (betAmount < room.game.currentBet && betAmount !== player.chips) {
+            this.sendError(clientId, `Minimum bet is ${room.game.currentBet} (or all-in)`);
+            return;
+        }
+
         if (betAmount > player.chips) {
             this.sendError(clientId, 'Insufficient chips');
             return;
@@ -1258,6 +1282,11 @@ class IndianPokerServer {
         player.chips -= betAmount;
         player.bet += betAmount;
         room.game.pot += betAmount;
+
+        // Update current bet if this bet is higher
+        if (betAmount > room.game.currentBet) {
+            room.game.currentBet = betAmount;
+        }
 
         // Indian Poker: Send personalized game state to each player
         this.broadcastPersonalizedGameState(room, 'bet_made', {
@@ -1278,6 +1307,18 @@ class IndianPokerServer {
         const player = room.game.players.get(clientId);
         if (!player) return;
 
+        // Security: Only allow folding during the betting phase
+        if (room.game.currentRound !== 'betting') {
+            this.sendError(clientId, 'Folding is only allowed during the betting phase');
+            return;
+        }
+
+        // Security: Player must not have already folded
+        if (player.hasFolded) {
+            this.sendError(clientId, 'You have already folded');
+            return;
+        }
+
         player.hasFolded = true;
 
         // Indian Poker: Send personalized game state to each player
@@ -1294,7 +1335,7 @@ class IndianPokerServer {
         const client = this.clients.get(clientId);
         const room = this.roomManager.getRoom(client.roomId);
 
-        if (!client || !room || room.variant !== GAME_VARIANTS.TEEN_PATTI) return;
+        if (!client || !room || room.variant !== GAME_VARIANTS.BLIND_MANS_BLUFF) return;
 
         const player = room.game.players.get(clientId);
         if (!player) return;
@@ -1347,7 +1388,7 @@ class IndianPokerServer {
     }
 
     checkGameEnd(room) {
-        if (room.variant === GAME_VARIANTS.TEEN_PATTI) {
+        if (room.variant === GAME_VARIANTS.BLIND_MANS_BLUFF) {
             const activePlayers = Array.from(room.game.players.values()).filter(p => !p.hasFolded);
             if (activePlayers.length <= 1) {
                 const winner = activePlayers[0];
@@ -1376,10 +1417,9 @@ class IndianPokerServer {
         const room = this.roomManager.getRoom(client.roomId);
         if (!room) return;
 
-        // Indian Poker: Return personalized game state (see others' cards, not your own)
-        const gameState = room.game.getGameStateForClient 
-            ? room.game.getGameStateForClient(clientId)
-            : room.game.getGameState();
+        // Security: Always use getGameStateForClient to prevent card leaks
+        // In Indian Poker, players should never see their own card during the game
+        const gameState = room.game.getGameStateForClient(clientId);
 
         this.sendMessage(clientId, {
             type: 'game_state',
@@ -1400,9 +1440,9 @@ class IndianPokerServer {
             return;
         }
 
-        // Only Teen Patti games have SNARK proofs
-        if (room.variant !== GAME_VARIANTS.TEEN_PATTI) {
-            this.sendError(clientId, 'SNARK proofs only available for Teen Patti');
+        // Only Blind Man's Bluff games have SNARK proofs
+        if (room.variant !== GAME_VARIANTS.BLIND_MANS_BLUFF) {
+            this.sendError(clientId, 'SNARK proofs only available for Blind Man\'s Bluff');
             return;
         }
 
