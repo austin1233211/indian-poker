@@ -402,10 +402,8 @@ class Deck {
 
         for (let i = shuffled.length - 1; i > 0; i--) {
             // Generate cryptographically secure random index
-            // Use rejection sampling to avoid modulo bias
-            const randomBytes = crypto.randomBytes(4);
-            const randomValue = randomBytes.readUInt32BE(0);
-            const j = randomValue % (i + 1);
+            // Use crypto.randomInt for uniform distribution without modulo bias
+            const j = crypto.randomInt(0, i + 1);
             
             // Swap cards
             [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
@@ -468,6 +466,59 @@ class TeenPattiGame {
             commitments: {}
         };
         this.snarkEnabled = false; // Will be set when proofs are generated
+
+        // Cryptographic fairness: Commit-and-reveal protocol
+        // Server commits to deck order before dealing, reveals at game end
+        this.deckCommitmentHash = null;      // SHA-256 hash of serialized deck
+        this.committedDeckOrder = null;      // Full deck order (revealed at game end)
+        this.deckRevealed = false;           // Whether deck has been revealed
+        this.playerSeatIndices = new Map();  // Map playerId -> seatIndex for verifiable dealing
+        this.nextSeatIndex = 0;              // Counter for assigning seat indices
+    }
+
+    /**
+     * Serialize deck in canonical format for commitment hash
+     * Format: "gameId:index:rank:suit|gameId:index:rank:suit|..."
+     * This format is deterministic and can be verified by clients
+     */
+    serializeDeck(deckArray) {
+        const parts = deckArray.map((card, index) =>
+            `${this.gameId}:${index}:${card.rank}:${card.suit}`
+        );
+        return parts.join('|');
+    }
+
+    /**
+     * Create commitment to deck order (call after shuffle, before dealing)
+     * Returns the commitment hash that should be broadcast to all players
+     */
+    commitToDeck() {
+        // Snapshot the shuffled deck order
+        this.committedDeckOrder = this.deck.shuffledDeck.map(card => ({
+            rank: card.rank,
+            suit: card.suit
+        }));
+
+        // Create canonical serialization and hash it
+        const serialized = this.serializeDeck(this.committedDeckOrder);
+        this.deckCommitmentHash = crypto.createHash('sha256').update(serialized).digest('hex');
+
+        return this.deckCommitmentHash;
+    }
+
+    /**
+     * Get deck reveal data for verification at game end
+     * Clients can verify: SHA-256(serializeDeck(committedDeckOrder)) === deckCommitmentHash
+     */
+    getDeckReveal() {
+        this.deckRevealed = true;
+        return {
+            gameId: this.gameId,
+            deckCommitmentHash: this.deckCommitmentHash,
+            committedDeckOrder: this.committedDeckOrder,
+            playerSeatIndices: Object.fromEntries(this.playerSeatIndices),
+            verificationInstructions: 'To verify: serialize deck as "gameId:index:rank:suit|..." and compute SHA-256. Hash should match deckCommitmentHash. Player with seatIndex N received card at index N.'
+        };
     }
 
     /**
@@ -499,6 +550,11 @@ class TeenPattiGame {
     }
 
     addPlayer(playerId, playerName, chips = 1000) {
+        // Assign seat index for verifiable dealing
+        // Player with seatIndex N will receive card at index N from the committed deck
+        const seatIndex = this.nextSeatIndex++;
+        this.playerSeatIndices.set(playerId, seatIndex);
+
         const player = {
             id: playerId,
             name: playerName,
@@ -509,7 +565,8 @@ class TeenPattiGame {
             hasShown: false,
             handValue: null,
             isActive: true,
-            joinedAt: Date.now()
+            joinedAt: Date.now(),
+            seatIndex: seatIndex  // Include seat index in player data
         };
         this.players.set(playerId, player);
         return player;
@@ -1110,8 +1167,17 @@ class IndianPokerServer {
     async startBlindMansBluffGame(room) {
         room.game.currentRound = 'dealing';
         
+        // Step 1: Shuffle the deck
+        room.game.deck.shuffle();
+        
         // Store deck state before dealing for SNARK proofs
         const deckStateBefore = room.game.deck.getProofState();
+        
+        // Step 2: CRYPTOGRAPHIC FAIRNESS - Commit to deck order BEFORE dealing
+        // This commitment hash is broadcast to all players so they can verify
+        // at game end that the deck wasn't manipulated after dealing
+        const deckCommitmentHash = room.game.commitToDeck();
+        console.log(`🔐 Deck commitment hash for room ${room.id}: ${deckCommitmentHash.substring(0, 16)}...`);
         
         // Register deck with PIR before dealing if enabled
         if (this.pirClient.isEnabled()) {
@@ -1123,8 +1189,9 @@ class IndianPokerServer {
             }
         }
         
-        // Deal cards and track positions for PIR verification
-        room.game.dealCardsWithTracking();
+        // Step 3: Deal cards using seat indices for verifiable dealing
+        // Player with seatIndex N receives card at index N from committed deck
+        this.dealCardsWithVerifiableOrder(room.game);
         room.game.currentRound = 'betting';
         room.game.currentBet = room.game.bootAmount;
 
@@ -1139,21 +1206,49 @@ class IndianPokerServer {
 
         // Indian Poker: Send personalized game state to each player
         // Each player sees OTHER players' cards but NOT their own
+        // Include deck commitment hash for cryptographic verification
         for (const [clientId, client] of this.clients) {
             if (client.roomId === room.id) {
+                const player = room.game.players.get(clientId);
                 this.sendMessage(clientId, {
                     type: 'game_started',
                     data: {
                         gameState: room.game.getGameStateForClient(clientId),
                         pirStatus: pirStatus,
                         message: '🎮 Indian Poker game started! You can see other players\' cards but not your own.',
-                        snarkStatus: snarkVerifier.isAvailable() ? 'generating' : 'unavailable'
+                        snarkStatus: snarkVerifier.isAvailable() ? 'generating' : 'unavailable',
+                        // Cryptographic fairness data
+                        deckCommitmentHash: deckCommitmentHash,
+                        yourSeatIndex: player ? player.seatIndex : null,
+                        gameId: room.game.gameId,
+                        verificationNote: 'At game end, the full deck will be revealed. You can verify: SHA-256(serialized deck) matches this commitment hash, and your card matches committedDeckOrder[yourSeatIndex].'
                     }
                 });
             }
         }
 
         console.log(`🎯 Indian Poker game started in room ${room.id} (PIR: ${pirStatus.enabled ? 'enabled' : 'disabled'})`);
+    }
+
+    /**
+     * Deal cards in verifiable order based on seat indices
+     * Player with seatIndex N receives card at deck index N
+     * This allows clients to verify dealing was fair after deck reveal
+     */
+    dealCardsWithVerifiableOrder(game) {
+        // Sort players by seat index to ensure deterministic dealing order
+        const playersBySeats = Array.from(game.players.entries())
+            .sort((a, b) => a[1].seatIndex - b[1].seatIndex);
+        
+        for (const [playerId, player] of playersBySeats) {
+            player.cards = [];
+            player.cardPositions = [];
+            
+            // Deal card from the deck (cards are dealt in order from shuffled deck)
+            const card = game.deck.dealCard();
+            player.cards.push(card);
+            player.cardPositions.push(player.seatIndex);
+        }
     }
 
     /**
@@ -1370,6 +1465,9 @@ class IndianPokerServer {
     endTeenPattiGame(room) {
         const result = room.game.processBettingRound();
 
+        // CRYPTOGRAPHIC FAIRNESS: Reveal the committed deck for verification
+        const deckReveal = room.game.getDeckReveal();
+
         this.broadcastToRoom(room.id, null, {
             type: 'game_ended',
             data: {
@@ -1380,11 +1478,14 @@ class IndianPokerServer {
                 winningHand: result.handValue,
                 allHands: result.allHands,
                 pot: room.game.pot,
-                message: `🏆 ${result.winner.name} wins with ${result.handValue.name}!`
+                message: `🏆 ${result.winner.name} wins with ${result.handValue.name}!`,
+                // Cryptographic verification data
+                deckReveal: deckReveal
             }
         });
 
-        console.log(`🎉 Teen Patti game ended in room ${room.id}. Winner: ${result.winner.name}`);
+        console.log(`🎉 Indian Poker game ended in room ${room.id}. Winner: ${result.winner.name}`);
+        console.log(`🔓 Deck revealed for verification. Commitment hash: ${deckReveal.deckCommitmentHash.substring(0, 16)}...`);
     }
 
     checkGameEnd(room) {
@@ -1394,6 +1495,10 @@ class IndianPokerServer {
                 const winner = activePlayers[0];
                 if (winner) {
                     winner.chips += room.game.pot;
+
+                    // CRYPTOGRAPHIC FAIRNESS: Reveal the committed deck for verification
+                    const deckReveal = room.game.getDeckReveal();
+
                     this.broadcastToRoom(room.id, null, {
                         type: 'game_ended',
                         data: {
@@ -1402,9 +1507,14 @@ class IndianPokerServer {
                                 name: winner.name
                             },
                             message: `🏆 ${winner.name} wins by default!`,
-                            pot: room.game.pot
+                            pot: room.game.pot,
+                            // Cryptographic verification data
+                            deckReveal: deckReveal
                         }
                     });
+
+                    console.log(`🎉 Indian Poker game ended in room ${room.id}. Winner: ${winner.name} (by default)`);
+                    console.log(`🔓 Deck revealed for verification. Commitment hash: ${deckReveal.deckCommitmentHash.substring(0, 16)}...`);
                 }
             }
         }
