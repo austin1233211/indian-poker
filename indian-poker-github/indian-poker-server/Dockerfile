@@ -1,6 +1,6 @@
 # Indian Poker Server Dockerfile
 # Includes groth16-snark for SNARK proof generation
-# Build context should be indian-poker-github/ directory
+# Build context is the repo root (Railway auto-detects this)
 FROM node:18-alpine
 
 # Set working directory
@@ -10,20 +10,20 @@ WORKDIR /app
 RUN apk add --no-cache python3 make g++
 
 # Copy and build groth16-snark first (for SNARK proof generation)
-COPY groth16-snark/package*.json ./groth16-snark/
+COPY indian-poker-github/groth16-snark/package*.json ./groth16-snark/
 WORKDIR /app/groth16-snark
 RUN npm install
 
 # Copy groth16-snark source (dist is already built and committed)
-COPY groth16-snark/ ./
+COPY indian-poker-github/groth16-snark/ ./
 
 # Now set up indian-poker-server
 WORKDIR /app/indian-poker-server
-COPY indian-poker-server/package*.json ./
+COPY indian-poker-github/indian-poker-server/package*.json ./
 RUN npm install --omit=dev
 
 # Copy indian-poker-server source
-COPY indian-poker-server/ ./
+COPY indian-poker-github/indian-poker-server/ ./
 
 # Expose WebSocket port (Railway sets PORT env var)
 EXPOSE 8080
