@@ -570,11 +570,451 @@ class NonceGenerator {
     }
 }
 
+/**
+ * Continuous Monitoring for Cryptographic Operations
+ * Tracks and logs all cryptographic operations for security auditing.
+ */
+class CryptoMonitor {
+    constructor(options = {}) {
+        this.operations = [];
+        this.maxOperations = options.maxOperations || 10000;
+        this.alertThresholds = {
+            proofGenerationsPerMinute: options.proofGenerationsPerMinute || 5,
+            failedVerificationsPerMinute: options.failedVerificationsPerMinute || 3,
+            suspiciousPatternCount: options.suspiciousPatternCount || 10
+        };
+        this.alerts = [];
+        this.operationCounts = new Map();
+        this.failedVerifications = new Map();
+    }
+
+    recordOperation(type, clientId, details = {}) {
+        const timestamp = Date.now();
+        const operation = {
+            type,
+            clientId,
+            timestamp,
+            details,
+            id: crypto.randomBytes(8).toString('hex')
+        };
+
+        this.operations.push(operation);
+
+        if (this.operations.length > this.maxOperations) {
+            this.operations.shift();
+        }
+
+        this.updateCounts(type, clientId, timestamp);
+        this.checkForAnomalies(type, clientId, timestamp);
+
+        return operation;
+    }
+
+    updateCounts(type, clientId, timestamp) {
+        const key = `${clientId}:${type}`;
+        const minute = Math.floor(timestamp / 60000);
+        
+        if (!this.operationCounts.has(key)) {
+            this.operationCounts.set(key, new Map());
+        }
+        
+        const counts = this.operationCounts.get(key);
+        counts.set(minute, (counts.get(minute) || 0) + 1);
+
+        for (const [m] of counts) {
+            if (m < minute - 5) counts.delete(m);
+        }
+    }
+
+    checkForAnomalies(type, clientId, timestamp) {
+        const key = `${clientId}:${type}`;
+        const minute = Math.floor(timestamp / 60000);
+        const counts = this.operationCounts.get(key);
+        
+        if (!counts) return;
+
+        const currentCount = counts.get(minute) || 0;
+
+        if (type === 'proof_generation' && currentCount > this.alertThresholds.proofGenerationsPerMinute) {
+            this.raiseAlert('HIGH_PROOF_GENERATION_RATE', clientId, {
+                count: currentCount,
+                threshold: this.alertThresholds.proofGenerationsPerMinute
+            });
+        }
+
+        if (type === 'verification_failed' && currentCount > this.alertThresholds.failedVerificationsPerMinute) {
+            this.raiseAlert('HIGH_VERIFICATION_FAILURE_RATE', clientId, {
+                count: currentCount,
+                threshold: this.alertThresholds.failedVerificationsPerMinute
+            });
+        }
+    }
+
+    recordVerificationFailure(clientId, reason) {
+        this.recordOperation('verification_failed', clientId, { reason });
+    }
+
+    raiseAlert(alertType, clientId, details) {
+        const alert = {
+            type: alertType,
+            clientId,
+            timestamp: Date.now(),
+            details,
+            id: crypto.randomBytes(8).toString('hex')
+        };
+
+        this.alerts.push(alert);
+        console.warn(`[SECURITY ALERT] ${alertType} for client ${clientId}:`, details);
+
+        return alert;
+    }
+
+    getRecentOperations(clientId = null, limit = 100) {
+        let ops = this.operations;
+        if (clientId) {
+            ops = ops.filter(op => op.clientId === clientId);
+        }
+        return ops.slice(-limit);
+    }
+
+    getAlerts(since = 0) {
+        return this.alerts.filter(a => a.timestamp > since);
+    }
+
+    getStatistics() {
+        const now = Date.now();
+        const lastHour = now - 3600000;
+        const recentOps = this.operations.filter(op => op.timestamp > lastHour);
+
+        const byType = {};
+        for (const op of recentOps) {
+            byType[op.type] = (byType[op.type] || 0) + 1;
+        }
+
+        return {
+            totalOperations: this.operations.length,
+            operationsLastHour: recentOps.length,
+            byType,
+            alertCount: this.alerts.length,
+            recentAlerts: this.alerts.slice(-10)
+        };
+    }
+
+    clearOldData(maxAgeMs = 86400000) {
+        const cutoff = Date.now() - maxAgeMs;
+        this.operations = this.operations.filter(op => op.timestamp > cutoff);
+        this.alerts = this.alerts.filter(a => a.timestamp > cutoff);
+    }
+}
+
+/**
+ * Audit Logger for Security-Relevant Events
+ * Provides comprehensive logging of security events for compliance and forensics.
+ */
+class AuditLogger {
+    constructor(options = {}) {
+        this.logs = [];
+        this.maxLogs = options.maxLogs || 50000;
+        this.logLevel = options.logLevel || 'INFO';
+        this.enableConsole = options.enableConsole !== false;
+    }
+
+    log(level, category, event, details = {}) {
+        const entry = {
+            id: crypto.randomBytes(8).toString('hex'),
+            timestamp: new Date().toISOString(),
+            level,
+            category,
+            event,
+            details,
+            serverTime: Date.now()
+        };
+
+        this.logs.push(entry);
+
+        if (this.logs.length > this.maxLogs) {
+            this.logs.shift();
+        }
+
+        if (this.enableConsole) {
+            const logFn = level === 'ERROR' ? console.error : 
+                         level === 'WARN' ? console.warn : console.log;
+            logFn(`[AUDIT:${level}] [${category}] ${event}`, details);
+        }
+
+        return entry;
+    }
+
+    logAuth(event, details) {
+        return this.log('INFO', 'AUTH', event, details);
+    }
+
+    logCrypto(event, details) {
+        return this.log('INFO', 'CRYPTO', event, details);
+    }
+
+    logGame(event, details) {
+        return this.log('INFO', 'GAME', event, details);
+    }
+
+    logSecurity(event, details) {
+        return this.log('WARN', 'SECURITY', event, details);
+    }
+
+    logError(event, details) {
+        return this.log('ERROR', 'ERROR', event, details);
+    }
+
+    logProofGeneration(gameId, proofType, success, details = {}) {
+        return this.logCrypto('PROOF_GENERATED', {
+            gameId,
+            proofType,
+            success,
+            ...details
+        });
+    }
+
+    logProofVerification(gameId, proofType, valid, details = {}) {
+        return this.logCrypto('PROOF_VERIFIED', {
+            gameId,
+            proofType,
+            valid,
+            ...details
+        });
+    }
+
+    logDeckCommitment(gameId, commitmentHash, details = {}) {
+        return this.logCrypto('DECK_COMMITTED', {
+            gameId,
+            commitmentHash: commitmentHash.substring(0, 16) + '...',
+            ...details
+        });
+    }
+
+    logRandomnessContribution(gameId, playerId, phase, details = {}) {
+        return this.logCrypto('RANDOMNESS_CONTRIBUTION', {
+            gameId,
+            playerId,
+            phase,
+            ...details
+        });
+    }
+
+    logConnectionSecurity(clientId, secure, details = {}) {
+        return this.logSecurity('CONNECTION_SECURITY', {
+            clientId,
+            secure,
+            ...details
+        });
+    }
+
+    logRateLimitExceeded(clientId, operation, details = {}) {
+        return this.logSecurity('RATE_LIMIT_EXCEEDED', {
+            clientId,
+            operation,
+            ...details
+        });
+    }
+
+    getLogs(filters = {}) {
+        let result = this.logs;
+
+        if (filters.level) {
+            result = result.filter(l => l.level === filters.level);
+        }
+        if (filters.category) {
+            result = result.filter(l => l.category === filters.category);
+        }
+        if (filters.since) {
+            result = result.filter(l => l.serverTime > filters.since);
+        }
+        if (filters.limit) {
+            result = result.slice(-filters.limit);
+        }
+
+        return result;
+    }
+
+    exportLogs(format = 'json') {
+        if (format === 'json') {
+            return JSON.stringify(this.logs, null, 2);
+        }
+        return this.logs.map(l => 
+            `${l.timestamp} [${l.level}] [${l.category}] ${l.event}: ${JSON.stringify(l.details)}`
+        ).join('\n');
+    }
+}
+
+/**
+ * Verification Checkpoints for Continuous Game Verification
+ * Allows periodic verification during gameplay, not just at game end.
+ */
+class VerificationCheckpoint {
+    constructor(options = {}) {
+        this.checkpoints = new Map();
+        this.verificationInterval = options.verificationInterval || 30000;
+    }
+
+    createCheckpoint(gameId, state) {
+        const checkpoint = {
+            id: crypto.randomBytes(8).toString('hex'),
+            gameId,
+            timestamp: Date.now(),
+            stateHash: this.hashState(state),
+            state: {
+                deckCommitment: state.deckCommitment,
+                dealtCards: state.dealtCards,
+                playerCount: state.playerCount,
+                currentRound: state.currentRound
+            }
+        };
+
+        if (!this.checkpoints.has(gameId)) {
+            this.checkpoints.set(gameId, []);
+        }
+
+        this.checkpoints.get(gameId).push(checkpoint);
+        return checkpoint;
+    }
+
+    hashState(state) {
+        const stateStr = JSON.stringify({
+            deckCommitment: state.deckCommitment,
+            dealtCards: state.dealtCards,
+            playerCount: state.playerCount,
+            currentRound: state.currentRound
+        });
+        return crypto.createHash('sha256').update(stateStr).digest('hex');
+    }
+
+    verifyCheckpoint(gameId, checkpointId, currentState) {
+        const gameCheckpoints = this.checkpoints.get(gameId);
+        if (!gameCheckpoints) {
+            return { valid: false, error: 'No checkpoints for game' };
+        }
+
+        const checkpoint = gameCheckpoints.find(cp => cp.id === checkpointId);
+        if (!checkpoint) {
+            return { valid: false, error: 'Checkpoint not found' };
+        }
+
+        const currentHash = this.hashState(currentState);
+        
+        if (currentState.deckCommitment !== checkpoint.state.deckCommitment) {
+            return { 
+                valid: false, 
+                error: 'Deck commitment changed since checkpoint',
+                tampering: true
+            };
+        }
+
+        return {
+            valid: true,
+            checkpointId,
+            checkpointTime: checkpoint.timestamp,
+            timeSinceCheckpoint: Date.now() - checkpoint.timestamp
+        };
+    }
+
+    getCheckpoints(gameId) {
+        return this.checkpoints.get(gameId) || [];
+    }
+
+    getLatestCheckpoint(gameId) {
+        const checkpoints = this.checkpoints.get(gameId);
+        if (!checkpoints || checkpoints.length === 0) return null;
+        return checkpoints[checkpoints.length - 1];
+    }
+
+    shouldCreateCheckpoint(gameId) {
+        const latest = this.getLatestCheckpoint(gameId);
+        if (!latest) return true;
+        return Date.now() - latest.timestamp > this.verificationInterval;
+    }
+
+    cleanupGame(gameId) {
+        this.checkpoints.delete(gameId);
+    }
+}
+
+/**
+ * Secure Dealing Index Generator
+ * Generates unpredictable dealing indices to prevent seat-based attacks.
+ */
+class SecureDealingIndex {
+    constructor() {
+        this.usedSeeds = new Set();
+    }
+
+    generateDealingOrder(playerCount, gameSecret, gameId) {
+        const seed = crypto.createHash('sha256')
+            .update(`${gameId}:${gameSecret}:${Date.now()}:${crypto.randomBytes(16).toString('hex')}`)
+            .digest('hex');
+
+        this.usedSeeds.add(seed);
+
+        const indices = Array.from({ length: playerCount }, (_, i) => i);
+        
+        for (let i = indices.length - 1; i > 0; i--) {
+            const seedPart = seed.substring((i * 4) % 60, (i * 4) % 60 + 4);
+            const j = parseInt(seedPart, 16) % (i + 1);
+            [indices[i], indices[j]] = [indices[j], indices[i]];
+        }
+
+        return {
+            order: indices,
+            seed: seed.substring(0, 16),
+            timestamp: Date.now()
+        };
+    }
+
+    generateCardDealingSequence(deckSize, playerCount, gameSecret, gameId) {
+        const dealingOrder = this.generateDealingOrder(playerCount, gameSecret, gameId);
+        
+        const cardSequence = [];
+        const cardsPerPlayer = Math.floor(deckSize / playerCount);
+        
+        for (let round = 0; round < cardsPerPlayer; round++) {
+            for (const playerIndex of dealingOrder.order) {
+                const cardIndex = round * playerCount + dealingOrder.order.indexOf(playerIndex);
+                if (cardIndex < deckSize) {
+                    cardSequence.push({
+                        cardIndex,
+                        playerIndex,
+                        round
+                    });
+                }
+            }
+        }
+
+        return {
+            sequence: cardSequence,
+            dealingOrder: dealingOrder.order,
+            seed: dealingOrder.seed,
+            timestamp: dealingOrder.timestamp
+        };
+    }
+
+    verifyDealingOrder(order, seed, gameSecret, gameId) {
+        const expectedOrder = this.generateDealingOrder(order.length, gameSecret, gameId);
+        
+        return {
+            valid: JSON.stringify(order) === JSON.stringify(expectedOrder.order),
+            providedOrder: order,
+            expectedOrder: expectedOrder.order
+        };
+    }
+}
+
 module.exports = {
     DistributedRandomness,
     CryptoRateLimiter,
     ProofValidator,
     EnhancedCardHasher,
     WSSEnforcer,
-    NonceGenerator
+    NonceGenerator,
+    CryptoMonitor,
+    AuditLogger,
+    VerificationCheckpoint,
+    SecureDealingIndex
 };
