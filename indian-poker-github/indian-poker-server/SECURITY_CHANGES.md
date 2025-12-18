@@ -478,6 +478,177 @@ Connection Close:
 4. **Timing Attack Prevention**: Constant-time comparisons protect secrets
 5. **Anomaly Detection**: Connection metadata enables pattern analysis
 
+---
+
+# Phase 4 Security Enhancements: Verifiable Shuffle
+
+## Overview
+
+Phase 4 implements a fully verifiable shuffle system that allows clients to independently verify that the deck was shuffled fairly using a deterministic, reproducible algorithm seeded by player-contributed randomness.
+
+## New Security Features
+
+### 1. Deterministic Seeded Shuffle (VerifiableShuffle)
+
+**Problem**: The existing shuffle used `crypto.randomInt()` which is cryptographically secure but not verifiable - clients cannot reproduce the shuffle to verify it was fair.
+
+**Solution**: Implemented `VerifiableShuffle` class with a deterministic Fisher-Yates shuffle that produces the same permutation given the same seed.
+
+**Key Features**:
+- Deterministic shuffle from 64-character hex seed
+- Rejection sampling to avoid modulo bias
+- Version-tagged algorithm for future compatibility
+- Static verification method for client-side validation
+
+**Implementation**:
+```javascript
+// Server shuffles with distributed randomness seed
+const { shuffled, permutation } = VerifiableShuffle.deterministicShuffle(deck, finalSeed);
+
+// Client can verify by reproducing the shuffle
+const verification = VerifiableShuffle.verifyShuffle(originalDeck, shuffledDeck, permutation, finalSeed);
+```
+
+### 2. Distributed Randomness Wiring
+
+**Problem**: The `DistributedRandomness` class existed but was not wired into the actual shuffle - the game used server-side randomness by default.
+
+**Solution**: Wired the commit-reveal randomness protocol into the actual shuffle process.
+
+**Flow**:
+1. Players commit their random seeds (SHA-256 hashes)
+2. Players reveal their actual seeds
+3. Server verifies reveals match commitments
+4. Final seed = SHA-256(seed_1 || seed_2 || ... || seed_n || timestamp)
+5. Deck is shuffled using the deterministic shuffle with the final seed
+
+**Code Changes**:
+- `startBlindMansBluffGame()` now checks for distributed randomness and uses it if available
+- `Deck.shuffle(seedHex)` accepts an optional seed for deterministic shuffling
+- `Deck.shuffleWithSeed()` uses `VerifiableShuffle.deterministicShuffle()`
+
+### 3. Game State Machine for Randomness Collection
+
+**Problem**: No enforcement that randomness collection must complete before dealing.
+
+**Solution**: Added state machine methods to `TeenPattiGame` for managing randomness collection.
+
+**States**:
+- `idle`: No randomness collection in progress
+- `awaiting_commitments`: Waiting for player commitments
+- `awaiting_reveals`: Waiting for player reveals
+- `complete`: Distributed randomness finalized
+- `fallback`: Timeout or failure, using server randomness
+- `timeout_partial`: Some players didn't reveal, using server randomness
+
+**Methods**:
+- `startRandomnessCollection()`: Begin collecting player seeds
+- `canStartDealing()`: Check if game can proceed to dealing
+- `finalizeRandomness()`: Complete the randomness protocol
+- `handleRandomnessTimeout()`: Handle timeout with graceful fallback
+
+### 4. Verification Transcript
+
+**Problem**: Clients had no way to verify the shuffle was derived from their contributed seeds.
+
+**Solution**: Generate a complete verification transcript at game end that includes all data needed to reproduce and verify the shuffle.
+
+**Transcript Contents**:
+- Shuffle algorithm version
+- Game ID and timestamp
+- All player commitments (playerId, commitment hash)
+- All player reveals (playerId, seed hash for privacy)
+- Final combined seed
+- Original deck hash
+- Shuffled deck hash
+- Permutation array
+- Transcript hash for integrity
+- Step-by-step verification instructions
+
+**Verification Steps**:
+1. Verify each commitment matches SHA-256(revealed_seed)
+2. Compute finalSeed = SHA-256(seed_1 || seed_2 || ... || timestamp) with seeds sorted by playerId
+3. Run deterministicShuffle(originalDeck, finalSeed) and verify result matches shuffledDeck
+4. Verify permutation array correctly maps original positions to shuffled positions
+
+### 5. Enhanced Deck Class
+
+**Problem**: Deck class didn't support seeded shuffling or track shuffle metadata.
+
+**Solution**: Extended Deck class with seeded shuffle support and metadata tracking.
+
+**New Properties**:
+- `shuffleSeed`: The seed used for shuffling (null if server randomness)
+- `shuffleTimestamp`: When the shuffle occurred
+- `isVerifiableShuffle`: Whether the shuffle is reproducible
+
+**New Methods**:
+- `shuffle(seedHex)`: Shuffle with optional seed
+- `shuffleRandom()`: Original random shuffle
+- `shuffleWithSeed(seedHex)`: Deterministic seeded shuffle
+
+### 6. Enhanced Game End Messages
+
+**Problem**: Game end messages didn't include verification transcript for verifiable shuffles.
+
+**Solution**: Extended `game_ended` and `zk_proof_deal` messages to include verification transcript.
+
+**New Message Fields**:
+- `verificationTranscript`: Full transcript for verifiable shuffles
+- `isVerifiableShuffle`: Whether shuffle is verifiable
+- `shuffleVersion`: Algorithm version for compatibility
+
+## Files Modified
+
+- `security-utils.js`:
+  - Added `VerifiableShuffle` class with deterministic shuffle and verification
+  - Extended `DistributedRandomness` with `getTranscriptData()`, `addCommitment()`, `addReveal()`, `getFinalSeed()`, `reset()` methods
+
+- `index.js`:
+  - Updated `Deck` class with seeded shuffle support
+  - Added state machine methods to `TeenPattiGame`
+  - Updated `startBlindMansBluffGame()` to wire distributed randomness
+  - Updated `endTeenPattiGame()` to include verification transcript
+
+## Security Benefits
+
+1. **Verifiable Fairness**: Clients can independently verify the shuffle was fair
+2. **No Server Trust Required**: Server cannot manipulate shuffle when distributed randomness is used
+3. **Bias-Free Randomness**: Rejection sampling prevents modulo bias
+4. **Graceful Degradation**: Falls back to server randomness if protocol fails
+5. **Complete Audit Trail**: Full transcript enables post-game verification
+6. **Version Compatibility**: Algorithm versioning enables future improvements
+
+## Client Verification Example
+
+```javascript
+// After receiving game_ended message with verificationTranscript
+const transcript = message.data.verificationTranscript;
+
+// 1. Verify commitments match reveals
+for (const reveal of transcript.reveals) {
+    const commitment = transcript.commitments.find(c => c.playerId === reveal.playerId);
+    const expectedHash = sha256(reveal.seed).substring(0, 16);
+    if (expectedHash !== reveal.seedHash) {
+        throw new Error('Commitment mismatch for player ' + reveal.playerId);
+    }
+}
+
+// 2. Reproduce the shuffle
+const { shuffled, permutation } = VerifiableShuffle.deterministicShuffle(
+    originalDeck, 
+    transcript.finalSeed
+);
+
+// 3. Verify shuffled deck matches
+const shuffledHash = sha256(JSON.stringify(shuffled));
+if (shuffledHash !== transcript.shuffledDeckHash) {
+    throw new Error('Shuffle verification failed');
+}
+
+console.log('Shuffle verified successfully!');
+```
+
 ## Conclusion
 
 These security enhancements significantly improve the cryptographic security of the Indian Poker system by addressing the most critical vulnerabilities identified in the security analysis. The modular design allows for easy maintenance and future enhancements.

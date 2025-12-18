@@ -30,6 +30,7 @@ const {
     CryptoMonitor,
     AuditLogger,
     VerificationCheckpoint,
+    VerifiableShuffle,
     SecureDealingIndex
 } = require('./security-utils');
 
@@ -386,10 +387,13 @@ class Card {
 class Deck {
     constructor() {
         this.cards = [];
-        this.originalDeck = []; // Store original deck for proof generation
-        this.shuffledDeck = []; // Store shuffled deck for proof generation
-        this.permutation = []; // Store permutation for proof generation
-        this.dealPositions = []; // Track which positions cards were dealt from
+        this.originalDeck = [];
+        this.shuffledDeck = [];
+        this.permutation = [];
+        this.dealPositions = [];
+        this.shuffleSeed = null;
+        this.shuffleTimestamp = null;
+        this.isVerifiableShuffle = false;
         this.initializeDeck();
         this.shuffle();
     }
@@ -401,38 +405,51 @@ class Deck {
                 this.cards.push(new Card(rank, suit));
             }
         }
-        // Store original deck order for SNARK proofs
         this.originalDeck = this.cards.map(card => ({ rank: card.rank, suit: card.suit }));
     }
 
-    shuffle() {
-        // Store original order before shuffling
-        const originalOrder = [...this.cards];
+    shuffle(seedHex = null) {
+        if (seedHex && /^[a-f0-9]{64}$/i.test(seedHex)) {
+            this.shuffleWithSeed(seedHex);
+        } else {
+            this.shuffleRandom();
+        }
+    }
 
-        // Fisher-Yates shuffle with permutation tracking
-        // Security: Use crypto.randomBytes for cryptographically secure shuffling
+    shuffleRandom() {
         const shuffled = [...this.cards];
         const permutation = Array.from({ length: shuffled.length }, (_, i) => i);
 
         for (let i = shuffled.length - 1; i > 0; i--) {
-            // Generate cryptographically secure random index
-            // Use crypto.randomInt for uniform distribution without modulo bias
             const j = crypto.randomInt(0, i + 1);
-            
-            // Swap cards
             [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-            // Track permutation
             [permutation[i], permutation[j]] = [permutation[j], permutation[i]];
         }
 
         this.cards = shuffled;
         this.shuffledDeck = shuffled.map(card => ({ rank: card.rank, suit: card.suit }));
         this.permutation = permutation;
-        this.dealPositions = []; // Reset deal positions
+        this.dealPositions = [];
+        this.shuffleSeed = null;
+        this.shuffleTimestamp = Date.now();
+        this.isVerifiableShuffle = false;
+    }
+
+    shuffleWithSeed(seedHex) {
+        const cardData = this.cards.map(card => ({ rank: card.rank, suit: card.suit }));
+        const { shuffled, permutation } = VerifiableShuffle.deterministicShuffle(cardData, seedHex);
+        
+        this.cards = shuffled.map(data => new Card(data.rank, data.suit));
+        this.shuffledDeck = shuffled;
+        this.permutation = permutation;
+        this.dealPositions = [];
+        this.shuffleSeed = seedHex;
+        this.shuffleTimestamp = Date.now();
+        this.isVerifiableShuffle = true;
     }
 
     dealCard() {
-        const position = 52 - this.cards.length; // Track position in original shuffled deck
+        const position = 52 - this.cards.length;
         this.dealPositions.push(position);
         return this.cards.pop();
     }
@@ -441,15 +458,16 @@ class Deck {
         return this.cards.length;
     }
 
-    /**
-     * Get deck state for SNARK proof generation
-     */
     getProofState() {
         return {
             originalDeck: this.originalDeck,
             shuffledDeck: this.shuffledDeck,
             permutation: this.permutation,
-            dealPositions: this.dealPositions
+            dealPositions: this.dealPositions,
+            shuffleSeed: this.shuffleSeed,
+            shuffleTimestamp: this.shuffleTimestamp,
+            isVerifiableShuffle: this.isVerifiableShuffle,
+            shuffleVersion: VerifiableShuffle.SHUFFLE_VERSION
         };
     }
 }
@@ -497,11 +515,136 @@ class TeenPattiGame {
         // Security Enhancement: Distributed randomness
         // Allows players to contribute entropy to shuffle seed
         this.distributedRandomness = new DistributedRandomness();
-        this.useDistributedRandomness = false; // Enable when players contribute seeds
+        this.useDistributedRandomness = false;
 
         // Security Enhancement: Enhanced card hasher with game secrets
         this.cardHasher = new EnhancedCardHasher();
-        this.gameSecret = null;              // Derived from player seeds
+        this.gameSecret = null;
+
+        // Verifiable shuffle state machine
+        this.randomnessState = 'idle';
+        this.randomnessTimeout = null;
+        this.randomnessTimeoutMs = 30000;
+        this.verificationTranscript = null;
+    }
+
+    getRandomnessState() {
+        return {
+            state: this.randomnessState,
+            commitmentCount: this.distributedRandomness.playerCommitments.size,
+            revealCount: this.distributedRandomness.playerReveals.size,
+            playerCount: this.players.size,
+            useDistributedRandomness: this.useDistributedRandomness,
+            hasFinalSeed: this.distributedRandomness.finalSeed !== null
+        };
+    }
+
+    canStartDealing() {
+        if (!this.useDistributedRandomness) {
+            return { canStart: true, reason: 'Using server-side randomness' };
+        }
+
+        const state = this.distributedRandomness.getState();
+        if (!state.revealPhaseComplete) {
+            return { 
+                canStart: false, 
+                reason: 'Waiting for all players to reveal their seeds',
+                commitmentCount: state.commitmentCount,
+                revealCount: state.revealCount
+            };
+        }
+
+        return { canStart: true, reason: 'Distributed randomness complete' };
+    }
+
+    startRandomnessCollection() {
+        this.randomnessState = 'awaiting_commitments';
+        this.useDistributedRandomness = true;
+        
+        this.randomnessTimeout = setTimeout(() => {
+            this.handleRandomnessTimeout();
+        }, this.randomnessTimeoutMs);
+
+        return {
+            state: this.randomnessState,
+            timeoutMs: this.randomnessTimeoutMs,
+            message: 'Randomness collection started. Players should commit their seeds.'
+        };
+    }
+
+    handleRandomnessTimeout() {
+        const state = this.distributedRandomness.getState();
+        
+        if (state.commitmentCount === 0) {
+            this.randomnessState = 'fallback';
+            this.useDistributedRandomness = false;
+            return { action: 'fallback', reason: 'No commitments received, using server randomness' };
+        }
+
+        if (!state.commitmentPhaseComplete) {
+            this.distributedRandomness.completeCommitmentPhase();
+        }
+
+        if (state.revealCount < state.commitmentCount) {
+            this.randomnessState = 'timeout_partial';
+            this.useDistributedRandomness = false;
+            return { 
+                action: 'fallback', 
+                reason: 'Not all players revealed, using server randomness',
+                committed: state.commitmentCount,
+                revealed: state.revealCount
+            };
+        }
+
+        return { action: 'complete', reason: 'All reveals received' };
+    }
+
+    finalizeRandomness() {
+        if (this.randomnessTimeout) {
+            clearTimeout(this.randomnessTimeout);
+            this.randomnessTimeout = null;
+        }
+
+        const state = this.distributedRandomness.getState();
+        
+        if (!state.revealPhaseComplete && state.revealCount === state.commitmentCount && state.commitmentCount > 0) {
+            this.distributedRandomness.generateShuffleSeed();
+        }
+
+        if (this.distributedRandomness.finalSeed) {
+            this.gameSecret = this.distributedRandomness.finalSeed;
+            this.randomnessState = 'complete';
+            return {
+                success: true,
+                finalSeed: this.distributedRandomness.finalSeed,
+                contributorCount: state.commitmentCount
+            };
+        }
+
+        this.randomnessState = 'fallback';
+        this.useDistributedRandomness = false;
+        return {
+            success: false,
+            reason: 'Could not generate final seed, using server randomness'
+        };
+    }
+
+    generateVerificationTranscript() {
+        const deckState = this.deck.getProofState();
+        const transcriptData = this.distributedRandomness.getTranscriptData();
+
+        this.verificationTranscript = VerifiableShuffle.generateVerificationTranscript({
+            gameId: this.gameId,
+            playerCommitments: transcriptData.playerCommitments,
+            playerReveals: transcriptData.playerReveals,
+            finalSeed: transcriptData.finalSeed,
+            originalDeck: deckState.originalDeck,
+            shuffledDeck: deckState.shuffledDeck,
+            permutation: deckState.permutation,
+            timestamp: transcriptData.timestamp || this.commitmentTimestamp
+        });
+
+        return this.verificationTranscript;
     }
 
     /**
@@ -1356,19 +1499,27 @@ class IndianPokerServer {
     async startBlindMansBluffGame(room) {
         room.game.currentRound = 'dealing';
         
-        // Step 1: Shuffle the deck
-        room.game.deck.shuffle();
+        let shuffleSeed = null;
+        let isVerifiableShuffle = false;
+
+        if (room.game.useDistributedRandomness) {
+            const randomnessResult = room.game.finalizeRandomness();
+            if (randomnessResult.success) {
+                shuffleSeed = randomnessResult.finalSeed;
+                isVerifiableShuffle = true;
+                console.log(`🎲 Using distributed randomness seed for room ${room.id} (${randomnessResult.contributorCount} contributors)`);
+            } else {
+                console.log(`⚠️ Distributed randomness failed for room ${room.id}: ${randomnessResult.reason}`);
+            }
+        }
+
+        room.game.deck.shuffle(shuffleSeed);
         
-        // Store deck state before dealing for SNARK proofs
         const deckStateBefore = room.game.deck.getProofState();
         
-        // Step 2: CRYPTOGRAPHIC FAIRNESS - Commit to deck order BEFORE dealing
-        // This commitment hash is broadcast to all players so they can verify
-        // at game end that the deck wasn't manipulated after dealing
         const deckCommitmentHash = room.game.commitToDeck();
         console.log(`🔐 Deck commitment hash for room ${room.id}: ${deckCommitmentHash.substring(0, 16)}...`);
 
-        // Send explicit deck_committed message for protocol clarity
         this.broadcastToRoom(room.id, null, {
             type: 'deck_committed',
             data: {
@@ -1376,7 +1527,11 @@ class IndianPokerServer {
                 commitmentHash: deckCommitmentHash,
                 timestamp: Date.now(),
                 algorithm: 'SHA-256',
-                note: 'This commitment binds the server to the current deck order. Verify at game end.'
+                isVerifiableShuffle: isVerifiableShuffle,
+                shuffleVersion: VerifiableShuffle.SHUFFLE_VERSION,
+                note: isVerifiableShuffle 
+                    ? 'Deck shuffled with distributed randomness. Full verification transcript available at game end.'
+                    : 'Deck shuffled with server randomness. Commitment binds server to current deck order.'
             }
         });
 
@@ -1696,9 +1851,13 @@ class IndianPokerServer {
     endTeenPattiGame(room) {
         const result = room.game.processBettingRound();
 
-        // CRYPTOGRAPHIC FAIRNESS: Reveal the committed deck for verification
         const deckReveal = room.game.getDeckReveal();
         const proofs = room.game.getProofs();
+
+        let verificationTranscript = null;
+        if (room.game.useDistributedRandomness && room.game.deck.isVerifiableShuffle) {
+            verificationTranscript = room.game.generateVerificationTranscript();
+        }
 
         this.broadcastToRoom(room.id, null, {
             type: 'game_ended',
@@ -1711,12 +1870,11 @@ class IndianPokerServer {
                 allHands: result.allHands,
                 pot: room.game.pot,
                 message: `🏆 ${result.winner.name} wins with ${result.handValue.name}!`,
-                // Cryptographic verification data
-                deckReveal: deckReveal
+                deckReveal: deckReveal,
+                verificationTranscript: verificationTranscript
             }
         });
 
-        // Send explicit zk_proof_deal message with ZK proofs for client verification
         if (proofs && (proofs.shuffleProof || proofs.dealingProof)) {
             this.broadcastToRoom(room.id, null, {
                 type: 'zk_proof_deal',
@@ -1729,22 +1887,31 @@ class IndianPokerServer {
                     verificationData: {
                         deckCommitmentHash: deckReveal.deckCommitmentHash,
                         dealingOrder: room.game.dealingOrder || null,
-                        dealingSeed: room.game.dealingSeed || null
+                        dealingSeed: room.game.dealingSeed || null,
+                        isVerifiableShuffle: room.game.deck.isVerifiableShuffle,
+                        shuffleVersion: VerifiableShuffle.SHUFFLE_VERSION
                     },
+                    verificationTranscript: verificationTranscript,
                     timestamp: Date.now(),
-                    note: 'Use these proofs to verify the shuffle and dealing were fair. See CLIENT_VERIFICATION.md for verification code.'
+                    note: verificationTranscript 
+                        ? 'Full verification transcript included. Clients can reproduce the exact shuffle from the disclosed seeds.'
+                        : 'Use these proofs to verify the shuffle and dealing were fair. See CLIENT_VERIFICATION.md for verification code.'
                 }
             });
 
             this.auditLogger.logProofGeneration(room.game.gameId, 'zk_proof_deal_sent', {
                 hasShuffleProof: !!proofs.shuffleProof,
                 hasDealingProof: !!proofs.dealingProof,
+                hasVerificationTranscript: !!verificationTranscript,
                 roomId: room.id
             });
         }
 
         console.log(`🎉 Indian Poker game ended in room ${room.id}. Winner: ${result.winner.name}`);
         console.log(`🔓 Deck revealed for verification. Commitment hash: ${deckReveal.deckCommitmentHash.substring(0, 16)}...`);
+        if (verificationTranscript) {
+            console.log(`📜 Verification transcript generated. Transcript hash: ${verificationTranscript.transcriptHash.substring(0, 16)}...`);
+        }
     }
 
     checkGameEnd(room) {

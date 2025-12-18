@@ -194,6 +194,48 @@ class DistributedRandomness {
     static generateRandomSeed() {
         return crypto.randomBytes(32).toString('hex');
     }
+
+    getTranscriptData() {
+        return {
+            playerCommitments: this.playerCommitments,
+            playerReveals: this.playerReveals,
+            finalSeed: this.finalSeed,
+            timestamp: this.timestamp,
+            commitmentPhaseComplete: this.commitmentPhaseComplete,
+            revealPhaseComplete: this.revealPhaseComplete
+        };
+    }
+
+    addCommitment(playerId, commitment) {
+        return this.commitPlayerSeed(playerId, commitment);
+    }
+
+    addReveal(playerId, seed) {
+        if (!this.commitmentPhaseComplete) {
+            this.completeCommitmentPhase();
+        }
+        return this.revealPlayerSeed(playerId, seed);
+    }
+
+    getFinalSeed() {
+        if (!this.finalSeed && this.revealPhaseComplete) {
+            this.generateShuffleSeed();
+        }
+        return this.finalSeed;
+    }
+
+    getStatus() {
+        return this.getState();
+    }
+
+    reset() {
+        this.playerCommitments = new Map();
+        this.playerReveals = new Map();
+        this.commitmentPhaseComplete = false;
+        this.revealPhaseComplete = false;
+        this.finalSeed = null;
+        this.timestamp = null;
+    }
 }
 
 /**
@@ -986,6 +1028,142 @@ class VerificationCheckpoint {
  * Secure Dealing Index Generator
  * Generates unpredictable dealing indices to prevent seat-based attacks.
  */
+class VerifiableShuffle {
+    static SHUFFLE_VERSION = '1.0.0';
+
+    static deterministicShuffle(array, seedHex) {
+        if (!seedHex || typeof seedHex !== 'string' || !/^[a-f0-9]{64}$/i.test(seedHex)) {
+            throw new Error('Invalid seed: must be 64-character hex string');
+        }
+
+        const result = [...array];
+        const permutation = Array.from({ length: result.length }, (_, i) => i);
+        let seedBuffer = Buffer.from(seedHex, 'hex');
+        let seedOffset = 0;
+
+        for (let i = result.length - 1; i > 0; i--) {
+            const j = this.rejectionSampleIndex(seedBuffer, seedOffset, i + 1);
+            seedOffset += 4;
+            
+            if (seedOffset >= 28) {
+                seedBuffer = crypto.createHash('sha256').update(seedBuffer).digest();
+                seedOffset = 0;
+            }
+
+            [result[i], result[j]] = [result[j], result[i]];
+            [permutation[i], permutation[j]] = [permutation[j], permutation[i]];
+        }
+
+        return { shuffled: result, permutation };
+    }
+
+    static rejectionSampleIndex(seedBuffer, offset, bound) {
+        const maxValid = Math.floor(0x100000000 / bound) * bound;
+        let attempts = 0;
+        const maxAttempts = 100;
+
+        while (attempts < maxAttempts) {
+            let value;
+            if (offset + 4 <= seedBuffer.length) {
+                value = seedBuffer.readUInt32BE(offset);
+            } else {
+                const extendedSeed = crypto.createHash('sha256')
+                    .update(seedBuffer)
+                    .update(Buffer.from([attempts]))
+                    .digest();
+                value = extendedSeed.readUInt32BE(0);
+            }
+
+            if (value < maxValid) {
+                return value % bound;
+            }
+            attempts++;
+        }
+
+        return seedBuffer.readUInt32BE(0) % bound;
+    }
+
+    static verifyShuffle(originalArray, shuffledArray, permutation, seedHex) {
+        try {
+            const { shuffled: expectedShuffled, permutation: expectedPermutation } = 
+                this.deterministicShuffle(originalArray, seedHex);
+
+            const shuffleMatches = JSON.stringify(shuffledArray) === JSON.stringify(expectedShuffled);
+            const permutationMatches = JSON.stringify(permutation) === JSON.stringify(expectedPermutation);
+
+            return {
+                valid: shuffleMatches && permutationMatches,
+                shuffleMatches,
+                permutationMatches,
+                shuffleVersion: this.SHUFFLE_VERSION
+            };
+        } catch (error) {
+            return {
+                valid: false,
+                error: error.message,
+                shuffleVersion: this.SHUFFLE_VERSION
+            };
+        }
+    }
+
+    static generateVerificationTranscript(params) {
+        const {
+            gameId,
+            playerCommitments,
+            playerReveals,
+            finalSeed,
+            originalDeck,
+            shuffledDeck,
+            permutation,
+            timestamp
+        } = params;
+
+        const commitmentsList = Array.from(playerCommitments.entries())
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([playerId, commitment]) => ({ playerId, commitment }));
+
+        const revealsList = Array.from(playerReveals.entries())
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([playerId, seed]) => ({ 
+                playerId, 
+                seedHash: crypto.createHash('sha256').update(seed).digest('hex').substring(0, 16)
+            }));
+
+        const transcriptHash = crypto.createHash('sha256')
+            .update(JSON.stringify({
+                gameId,
+                commitments: commitmentsList,
+                finalSeed,
+                shuffleVersion: this.SHUFFLE_VERSION,
+                timestamp
+            }))
+            .digest('hex');
+
+        return {
+            version: this.SHUFFLE_VERSION,
+            gameId,
+            timestamp,
+            commitments: commitmentsList,
+            reveals: revealsList,
+            finalSeed,
+            originalDeckHash: crypto.createHash('sha256')
+                .update(JSON.stringify(originalDeck))
+                .digest('hex'),
+            shuffledDeckHash: crypto.createHash('sha256')
+                .update(JSON.stringify(shuffledDeck))
+                .digest('hex'),
+            permutation,
+            transcriptHash,
+            verificationInstructions: [
+                '1. Verify each commitment matches SHA-256(revealed_seed) for each player',
+                '2. Compute finalSeed = SHA-256(seed_1 || seed_2 || ... || seed_n || timestamp) with seeds sorted by playerId',
+                '3. Run deterministicShuffle(originalDeck, finalSeed) and verify result matches shuffledDeck',
+                '4. Verify permutation array correctly maps original positions to shuffled positions'
+            ]
+        };
+    }
+}
+
 class SecureDealingIndex {
     constructor() {
         this.usedSeeds = new Set();
@@ -1062,5 +1240,6 @@ module.exports = {
     CryptoMonitor,
     AuditLogger,
     VerificationCheckpoint,
+    VerifiableShuffle,
     SecureDealingIndex
 };
