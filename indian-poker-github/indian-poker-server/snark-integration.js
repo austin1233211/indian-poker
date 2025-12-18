@@ -3,6 +3,11 @@
  * 
  * This module integrates the Groth16 SNARK proof system with the game server
  * to provide verifiable fairness for card shuffling and dealing.
+ * 
+ * PR 2: Real Groth16 Proofs
+ * - Added support for real circuit artifacts (.wasm, .zkey files)
+ * - CircuitLoader automatically loads compiled circuits from build/
+ * - Real proof generation and verification using snarkjs
  */
 
 const path = require('path');
@@ -10,12 +15,15 @@ const path = require('path');
 // Import the compiled SNARK modules
 let PokerProofManager;
 let Groth16SNARK;
+let CircuitLoader;
 
 try {
     const proofManagerModule = require('../groth16-snark/dist/proofManager');
     const snarkModule = require('../groth16-snark/dist/index');
+    const circuitLoaderModule = require('../groth16-snark/dist/circuitLoader');
     PokerProofManager = proofManagerModule.PokerProofManager || proofManagerModule.default;
     Groth16SNARK = snarkModule.Groth16SNARK || snarkModule.default;
+    CircuitLoader = circuitLoaderModule.CircuitLoader || circuitLoaderModule.default;
 } catch (error) {
     console.warn('SNARK modules not available:', error.message);
     console.warn('Running without SNARK proof generation');
@@ -28,7 +36,9 @@ class SNARKGameVerifier {
     constructor() {
         this.proofManager = null;
         this.snark = null;
+        this.circuitLoader = null;
         this.initialized = false;
+        this.realCircuitsReady = false;
         this.proofHistory = new Map(); // gameId -> proofs
     }
 
@@ -44,19 +54,33 @@ class SNARKGameVerifier {
         try {
             console.log('Initializing SNARK verification system...');
             this.proofManager = new PokerProofManager();
-            this.snark = new Groth16SNARK();
+            
+            // Initialize with real circuits enabled
+            const buildDir = path.join(__dirname, '..', 'groth16-snark', 'build');
+            this.snark = new Groth16SNARK({ useRealCircuits: true, buildDir });
             
             await this.proofManager.initialize();
             await this.snark.initialize();
             
+            // Check if real circuits are ready
+            this.realCircuitsReady = this.snark.isRealCircuitsReady();
+            
             this.initialized = true;
             console.log('SNARK verification system initialized successfully');
+            console.log(`Real circuits: ${this.realCircuitsReady ? 'READY' : 'NOT AVAILABLE (using simulated proofs)'}`);
             return true;
         } catch (error) {
             console.error('Failed to initialize SNARK system:', error.message);
             this.initialized = false;
             return false;
         }
+    }
+
+    /**
+     * Check if real circuits are available for cryptographic proofs
+     */
+    isRealCircuitsReady() {
+        return this.realCircuitsReady;
     }
 
     /**
@@ -262,7 +286,9 @@ class SNARKGameVerifier {
         
         return {
             available: true,
+            realCircuitsReady: this.realCircuitsReady,
             proofManagerStats: this.proofManager.getStatistics(),
+            snarkStats: this.snark ? this.snark.getStatistics() : null,
             gamesWithProofs: this.proofHistory.size
         };
     }

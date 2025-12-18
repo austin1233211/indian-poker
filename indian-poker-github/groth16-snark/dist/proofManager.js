@@ -37,6 +37,7 @@ const index_1 = __importDefault(require("./index"));
 const pokerCircuits_1 = __importDefault(require("./pokerCircuits"));
 const fs = __importStar(require("fs/promises"));
 const path = __importStar(require("path"));
+const crypto = __importStar(require("crypto"));
 const json_stable_stringify_1 = __importDefault(require("json-stable-stringify"));
 const sha256_1 = require("@noble/hashes/sha256");
 /**
@@ -434,7 +435,8 @@ class PokerProofManager {
      * Generate random seed
      */
     generateRandomSeed() {
-        return `seed-${Date.now()}-${Math.random()}`;
+        const randomBytes = crypto.randomBytes(16);
+        return `seed-${Date.now()}-${randomBytes.toString('hex')}`;
     }
     /**
      * Compute card commitment
