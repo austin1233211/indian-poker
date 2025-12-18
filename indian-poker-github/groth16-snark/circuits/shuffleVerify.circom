@@ -30,23 +30,23 @@ template ShuffleVerify() {
     signal input shuffledCards[N];
     signal input permutation[N];
     
-    // Verify each card in shuffled deck came from original deck
-    // permutation[i] tells us where shuffledCards[i] came from in originalCards
-    component rangeChecks[N];
-    component equalChecks[N];
+    // Declare all components outside the loop (Circom requirement)
+    component permRangeChecks[N];
+    component cardRangeChecks[N];
     
+    // Verify each card in shuffled deck came from original deck
     for (var i = 0; i < N; i++) {
         // Verify permutation index is valid (0 to N-1)
-        rangeChecks[i] = LessThan(8);
-        rangeChecks[i].in[0] <== permutation[i];
-        rangeChecks[i].in[1] <== N;
-        rangeChecks[i].out === 1;
+        permRangeChecks[i] = LessThan(8);
+        permRangeChecks[i].in[0] <== permutation[i];
+        permRangeChecks[i].in[1] <== N;
+        permRangeChecks[i].out === 1;
         
         // Verify card values are in valid range (0-51)
-        component cardRangeCheck = LessThan(8);
-        cardRangeCheck.in[0] <== shuffledCards[i];
-        cardRangeCheck.in[1] <== 52;
-        cardRangeCheck.out === 1;
+        cardRangeChecks[i] = LessThan(8);
+        cardRangeChecks[i].in[0] <== shuffledCards[i];
+        cardRangeChecks[i].in[1] <== 52;
+        cardRangeChecks[i].out === 1;
     }
     
     // Compute hash of original cards

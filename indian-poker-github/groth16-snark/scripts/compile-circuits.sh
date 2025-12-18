@@ -27,7 +27,7 @@ mkdir -p "$PTAU_DIR"
 PTAU_FILE="$PTAU_DIR/powersOfTau28_hez_final_14.ptau"
 if [ ! -f "$PTAU_FILE" ]; then
     echo -e "${YELLOW}Downloading Powers of Tau file...${NC}"
-    curl -L -o "$PTAU_FILE" "https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_14.ptau"
+    curl -L -o "$PTAU_FILE" "https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_14.ptau"
     echo -e "${GREEN}Powers of Tau file downloaded${NC}"
 fi
 
