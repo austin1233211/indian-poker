@@ -26,7 +26,11 @@ const {
     ProofValidator,
     EnhancedCardHasher,
     WSSEnforcer,
-    NonceGenerator
+    NonceGenerator,
+    CryptoMonitor,
+    AuditLogger,
+    VerificationCheckpoint,
+    SecureDealingIndex
 } = require('./security-utils');
 
 // PIR Server Configuration
@@ -871,6 +875,22 @@ class IndianPokerServer {
             allowedOrigins: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : []
         });
 
+        // Additional Security Enhancement: Continuous monitoring and audit logging
+        this.cryptoMonitor = new CryptoMonitor({
+            maxOperations: 10000,
+            proofGenerationsPerMinute: 5,
+            failedVerificationsPerMinute: 3
+        });
+        this.auditLogger = new AuditLogger({
+            maxLogs: 50000,
+            enableConsole: process.env.NODE_ENV !== 'production'
+        });
+        this.verificationCheckpoint = new VerificationCheckpoint({
+            verificationInterval: 30000 // 30 seconds
+        });
+        this.secureDealingIndex = new SecureDealingIndex();
+        this.enhancedCardHasher = new EnhancedCardHasher();
+
         // Create HTTP server for health checks (required for Railway deployment)
         this.httpServer = http.createServer((req, res) => {
             if (req.url === '/' || req.url === '/health') {
@@ -881,8 +901,24 @@ class IndianPokerServer {
                     security: {
                         wssEnforced: this.wssEnforcer.enforceWSS,
                         rateLimitingEnabled: true,
-                        proofValidationEnabled: true
+                        proofValidationEnabled: true,
+                        continuousMonitoringEnabled: true,
+                        auditLoggingEnabled: true,
+                        verificationCheckpointsEnabled: true,
+                        secureDealingEnabled: true
                     }
+                }));
+            } else if (req.url === '/security/stats') {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    cryptoMonitor: this.cryptoMonitor.getStatistics(),
+                    proofValidator: this.proofValidator.getStatistics(),
+                    rateLimiter: { active: true }
+                }));
+            } else if (req.url === '/security/audit') {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    logs: this.auditLogger.getLogs({ limit: 100 })
                 }));
             } else {
                 res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -1058,6 +1094,20 @@ class IndianPokerServer {
                     break;
                 case 'get_randomness_status':
                     this.handleGetRandomnessStatus(clientId);
+                    break;
+                // Security Enhancement: Verification checkpoint handlers
+                case 'create_checkpoint':
+                    this.handleCreateCheckpoint(clientId);
+                    break;
+                case 'verify_checkpoint':
+                    this.handleVerifyCheckpoint(clientId, messageData);
+                    break;
+                case 'get_checkpoints':
+                    this.handleGetCheckpoints(clientId);
+                    break;
+                // Security Enhancement: Audit and monitoring handlers
+                case 'get_security_stats':
+                    this.handleGetSecurityStats(clientId);
                     break;
                 default:
                     this.sendError(clientId, `Unknown message type: ${type}`);
@@ -1315,24 +1365,49 @@ class IndianPokerServer {
     }
 
     /**
-     * Deal cards in verifiable order based on seat indices
-     * Player with seatIndex N receives card at deck index N
+     * Deal cards in verifiable order using secure unpredictable indices
+     * Uses SecureDealingIndex to prevent seat-based prediction attacks
      * This allows clients to verify dealing was fair after deck reveal
      */
     dealCardsWithVerifiableOrder(game) {
-        // Sort players by seat index to ensure deterministic dealing order
-        const playersBySeats = Array.from(game.players.entries())
-            .sort((a, b) => a[1].seatIndex - b[1].seatIndex);
+        const playerCount = game.players.size;
+        const gameSecret = game.deckNonce || crypto.randomBytes(16).toString('hex');
         
-        for (const [playerId, player] of playersBySeats) {
+        const dealingInfo = this.secureDealingIndex.generateDealingOrder(
+            playerCount,
+            gameSecret,
+            game.gameId
+        );
+
+        game.dealingOrder = dealingInfo.order;
+        game.dealingSeed = dealingInfo.seed;
+
+        const playerArray = Array.from(game.players.entries())
+            .sort((a, b) => a[1].seatIndex - b[1].seatIndex);
+
+        for (let i = 0; i < dealingInfo.order.length; i++) {
+            const dealIndex = dealingInfo.order[i];
+            const [playerId, player] = playerArray[dealIndex];
+            
             player.cards = [];
             player.cardPositions = [];
             
-            // Deal card from the deck (cards are dealt in order from shuffled deck)
             const card = game.deck.dealCard();
             player.cards.push(card);
-            player.cardPositions.push(player.seatIndex);
+            player.cardPositions.push(i);
         }
+
+        this.auditLogger.logGame('CARDS_DEALT', {
+            gameId: game.gameId,
+            playerCount,
+            dealingOrder: dealingInfo.order,
+            dealingSeed: dealingInfo.seed
+        });
+
+        this.cryptoMonitor.recordOperation('card_dealing', game.gameId, {
+            playerCount,
+            dealingOrder: dealingInfo.order
+        });
     }
 
     /**
@@ -1968,6 +2043,136 @@ class IndianPokerServer {
                 ...status,
                 useDistributedRandomness: room.game.useDistributedRandomness
             }
+        });
+    }
+
+    handleCreateCheckpoint(clientId) {
+        const client = this.clients.get(clientId);
+        if (!client || !client.roomId) {
+            this.sendError(clientId, 'Not in a room');
+            return;
+        }
+
+        const room = this.roomManager.getRoom(client.roomId);
+        if (!room || !room.game) {
+            this.sendError(clientId, 'No active game');
+            return;
+        }
+
+        const gameState = {
+            deckCommitment: room.game.deckCommitment,
+            dealtCards: room.game.dealtCards || [],
+            playerCount: room.game.players.size,
+            currentRound: room.game.currentRound || 0
+        };
+
+        const checkpoint = this.verificationCheckpoint.createCheckpoint(room.id, gameState);
+        
+        this.auditLogger.logGame('CHECKPOINT_CREATED', {
+            gameId: room.id,
+            checkpointId: checkpoint.id,
+            clientId
+        });
+
+        this.cryptoMonitor.recordOperation('checkpoint_created', clientId, {
+            gameId: room.id,
+            checkpointId: checkpoint.id
+        });
+
+        this.sendMessage(clientId, {
+            type: 'checkpoint_created',
+            data: {
+                checkpointId: checkpoint.id,
+                timestamp: checkpoint.timestamp,
+                stateHash: checkpoint.stateHash
+            }
+        });
+    }
+
+    handleVerifyCheckpoint(clientId, data) {
+        const client = this.clients.get(clientId);
+        if (!client || !client.roomId) {
+            this.sendError(clientId, 'Not in a room');
+            return;
+        }
+
+        const room = this.roomManager.getRoom(client.roomId);
+        if (!room || !room.game) {
+            this.sendError(clientId, 'No active game');
+            return;
+        }
+
+        const { checkpointId } = data;
+        if (!checkpointId) {
+            this.sendError(clientId, 'Checkpoint ID required');
+            return;
+        }
+
+        const currentState = {
+            deckCommitment: room.game.deckCommitment,
+            dealtCards: room.game.dealtCards || [],
+            playerCount: room.game.players.size,
+            currentRound: room.game.currentRound || 0
+        };
+
+        const result = this.verificationCheckpoint.verifyCheckpoint(room.id, checkpointId, currentState);
+
+        this.auditLogger.logGame('CHECKPOINT_VERIFIED', {
+            gameId: room.id,
+            checkpointId,
+            valid: result.valid,
+            clientId
+        });
+
+        if (!result.valid) {
+            this.cryptoMonitor.recordVerificationFailure(clientId, result.error);
+        }
+
+        this.sendMessage(clientId, {
+            type: 'checkpoint_verification',
+            data: result
+        });
+    }
+
+    handleGetCheckpoints(clientId) {
+        const client = this.clients.get(clientId);
+        if (!client || !client.roomId) {
+            this.sendError(clientId, 'Not in a room');
+            return;
+        }
+
+        const room = this.roomManager.getRoom(client.roomId);
+        if (!room) {
+            this.sendError(clientId, 'Room not found');
+            return;
+        }
+
+        const checkpoints = this.verificationCheckpoint.getCheckpoints(room.id);
+
+        this.sendMessage(clientId, {
+            type: 'checkpoints_list',
+            data: {
+                gameId: room.id,
+                checkpoints: checkpoints.map(cp => ({
+                    id: cp.id,
+                    timestamp: cp.timestamp,
+                    stateHash: cp.stateHash
+                }))
+            }
+        });
+    }
+
+    handleGetSecurityStats(clientId) {
+        const stats = {
+            cryptoMonitor: this.cryptoMonitor.getStatistics(),
+            proofValidator: this.proofValidator.getStatistics(),
+            rateLimiter: this.rateLimiter.getStatus(clientId),
+            recentAlerts: this.cryptoMonitor.getAlerts(Date.now() - 3600000)
+        };
+
+        this.sendMessage(clientId, {
+            type: 'security_stats',
+            data: stats
         });
     }
 

@@ -166,14 +166,209 @@ Clients can verify security enhancements are active by:
 2. Querying the `/health` endpoint for security status
 3. Verifying nonce is included in deck reveal data
 
-## Future Recommendations
+## Phase 2 Security Enhancements
 
-The following items from the security analysis are recommended for future implementation:
+The following additional security enhancements have been implemented based on the remaining items from the security analysis.
 
-1. **SNARK Trusted Setup Documentation**: Document the trusted setup ceremony and publish parameters
-2. **Continuous Verification Checkpoints**: Add periodic verification during gameplay
-3. **Client-Side Verification Library**: Provide a library for clients to verify proofs locally
-4. **Audit Logging**: Add comprehensive logging of security-relevant events
+### 8. Continuous Monitoring of Cryptographic Operations
+
+**Problem**: Without monitoring, suspicious patterns of cryptographic operations could go undetected.
+
+**Solution**: Implemented `CryptoMonitor` class that tracks all cryptographic operations and raises alerts for anomalies.
+
+**Files Modified**:
+- `security-utils.js`: Added `CryptoMonitor` class
+- `index.js`: Integrated monitoring in server constructor and key operations
+
+**Features**:
+- Tracks all cryptographic operations with timestamps
+- Configurable alert thresholds for proof generations and verification failures
+- Automatic anomaly detection for suspicious patterns
+- Statistics endpoint for monitoring dashboards
+- Memory-efficient with automatic cleanup of old data
+
+**Alert Types**:
+- `HIGH_PROOF_GENERATION_RATE`: Too many proof generations per minute
+- `HIGH_VERIFICATION_FAILURE_RATE`: Too many failed verifications per minute
+
+### 9. Audit Logging for Security-Relevant Events
+
+**Problem**: Without comprehensive logging, security incidents cannot be properly investigated.
+
+**Solution**: Implemented `AuditLogger` class that provides structured logging of all security-relevant events.
+
+**Files Modified**:
+- `security-utils.js`: Added `AuditLogger` class
+- `index.js`: Integrated audit logging throughout the server
+
+**Features**:
+- Structured log entries with timestamps, levels, and categories
+- Specialized logging methods for auth, crypto, game, and security events
+- Configurable log levels and console output
+- Log export in JSON or text format
+- Memory-efficient with configurable maximum log retention
+
+**Log Categories**:
+- `AUTH`: Authentication events
+- `CRYPTO`: Cryptographic operations (proof generation, verification, deck commitment)
+- `GAME`: Game events (checkpoints, card dealing)
+- `SECURITY`: Security-relevant events (rate limits, connection security)
+- `ERROR`: Error conditions
+
+### 10. Continuous Verification Checkpoints
+
+**Problem**: Verification only at game end allows tampering to go undetected during gameplay.
+
+**Solution**: Implemented `VerificationCheckpoint` class that allows periodic verification during gameplay.
+
+**Files Modified**:
+- `security-utils.js`: Added `VerificationCheckpoint` class
+- `index.js`: Added checkpoint message handlers
+
+**Features**:
+- Create checkpoints at any point during gameplay
+- State hashing for integrity verification
+- Tampering detection if deck commitment changes
+- Configurable verification interval (default: 30 seconds)
+- Per-game checkpoint storage with automatic cleanup
+
+**New WebSocket Message Types**:
+- `create_checkpoint`: Create a new verification checkpoint
+- `verify_checkpoint`: Verify a previously created checkpoint
+- `get_checkpoints`: List all checkpoints for current game
+- `checkpoint_created`: Confirmation with checkpoint ID and state hash
+- `checkpoint_verification`: Verification result with tampering detection
+
+### 11. Secure Dealing Index Generation
+
+**Problem**: Predictable dealing order based on seat indices allows seat-based prediction attacks.
+
+**Solution**: Implemented `SecureDealingIndex` class that generates unpredictable dealing orders.
+
+**Files Modified**:
+- `security-utils.js`: Added `SecureDealingIndex` class
+- `index.js`: Updated `dealCardsWithVerifiableOrder()` to use secure indices
+
+**Features**:
+- Cryptographically secure dealing order generation
+- Uses game secret and random entropy for unpredictability
+- Verifiable dealing order with seed publication
+- Fisher-Yates shuffle with cryptographic randomness
+
+**Implementation**:
+- Dealing order derived from SHA-256 hash of game ID, secret, timestamp, and random bytes
+- Order can be verified by clients using the published seed
+- Prevents attackers from predicting which player receives which card position
+
+### 12. Enhanced Card Hasher Integration
+
+**Problem**: The `EnhancedCardHasher` class was implemented but not integrated into the server.
+
+**Solution**: Integrated `EnhancedCardHasher` into the server for game-specific card hashing.
+
+**Files Modified**:
+- `index.js`: Added `enhancedCardHasher` to server constructor
+
+**Features**:
+- Game-specific secret derivation for each game
+- Context-aware card hashing prevents cross-game attacks
+- Batch hashing support for efficiency
+
+### 13. Security Statistics Endpoint
+
+**Problem**: No way to monitor security status in real-time.
+
+**Solution**: Added HTTP endpoints and WebSocket message for security statistics.
+
+**Files Modified**:
+- `index.js`: Added `/security/stats` and `/security/audit` HTTP endpoints, `get_security_stats` message handler
+
+**Endpoints**:
+- `GET /security/stats`: Returns crypto monitor statistics and proof validator stats
+- `GET /security/audit`: Returns recent audit logs (last 100 entries)
+
+**WebSocket Message**:
+- `get_security_stats`: Returns comprehensive security statistics to client
+
+### 14. SNARK Trusted Setup Documentation
+
+**Problem**: No documentation for the SNARK trusted setup process.
+
+**Solution**: Created comprehensive documentation for the trusted setup ceremony.
+
+**Files Added**:
+- `SNARK_TRUSTED_SETUP.md`: Complete documentation of trusted setup process
+
+**Contents**:
+- Overview of SNARK proof system
+- Trusted setup components (proving key, verification key)
+- Setup ceremony phases (Powers of Tau, circuit-specific)
+- Security considerations (MPC, toxic waste)
+- File locations and verification process
+- Recommendations for production deployment
+
+### 15. Client-Side Verification Library Documentation
+
+**Problem**: No documentation for clients to implement independent verification.
+
+**Solution**: Created comprehensive documentation with code examples for client-side verification.
+
+**Files Added**:
+- `CLIENT_VERIFICATION.md`: Complete client verification documentation
+
+**Contents**:
+- Verification types (deck commitment, card position, dealing order, SNARK, distributed randomness, checkpoints)
+- WebSocket API for verification requests
+- Complete verification flow (setup, gameplay, game end)
+- Implementation example with `IndianPokerVerifier` class
+- Security recommendations and troubleshooting
+
+## Updated Security Utilities Module
+
+The `security-utils.js` module now contains 10 security-related classes:
+
+1. **DistributedRandomness**: Commit-reveal scheme for player entropy contribution
+2. **CryptoRateLimiter**: Rate limiting for cryptographic operations
+3. **ProofValidator**: Proof expiration and replay protection
+4. **EnhancedCardHasher**: Game-context-aware card hashing
+5. **WSSEnforcer**: WebSocket security enforcement
+6. **NonceGenerator**: Cryptographic nonce generation
+7. **CryptoMonitor**: Continuous monitoring of cryptographic operations (NEW)
+8. **AuditLogger**: Comprehensive security event logging (NEW)
+9. **VerificationCheckpoint**: Periodic verification during gameplay (NEW)
+10. **SecureDealingIndex**: Unpredictable dealing order generation (NEW)
+
+## Updated Server Integration
+
+The `IndianPokerServer` class now integrates all security utilities:
+
+- Constructor initializes all 10 security utilities
+- Health endpoint reports all security features status
+- New HTTP endpoints for security statistics and audit logs
+- Connection handler validates WSS and origin
+- Proof verification includes rate limiting, replay protection, and monitoring
+- Card dealing uses secure unpredictable indices
+- All key operations logged via audit logger
+- Checkpoint handlers for continuous verification
+
+## Updated Health Endpoint
+
+The `/health` endpoint now reports:
+```json
+{
+  "status": "ok",
+  "service": "indian-poker-server",
+  "security": {
+    "wssEnforced": true,
+    "rateLimitingEnabled": true,
+    "proofValidationEnabled": true,
+    "continuousMonitoringEnabled": true,
+    "auditLoggingEnabled": true,
+    "verificationCheckpointsEnabled": true,
+    "secureDealingEnabled": true
+  }
+}
+```
 
 ## Testing
 
