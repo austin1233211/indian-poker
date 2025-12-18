@@ -5,9 +5,33 @@
  * This module defines the specific circuits needed to verify fair poker
  * card dealing using zero-knowledge proofs.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PokerCircuitBuilder = void 0;
 const circomlibjs_1 = require("circomlibjs");
+const crypto = __importStar(require("crypto"));
 /**
  * Poker Circuit Builder
  */
@@ -526,15 +550,21 @@ class PokerCircuitBuilder {
      * Generate random seed
      */
     generateRandomSeed() {
-        return `seed-${Date.now()}-${Math.random()}`;
+        const randomBytes = crypto.randomBytes(16);
+        return `seed-${Date.now()}-${randomBytes.toString('hex')}`;
     }
     /**
      * Calculate hand strength (simplified)
      */
     calculateHandStrength(cards) {
-        // Simplified hand strength calculation
-        // In reality, this would evaluate poker hands
-        return Math.floor(Math.random() * 7463); // 0-7462 range
+        // Simplified hand strength calculation based on card values
+        // In reality, this would evaluate poker hands properly
+        // Using deterministic calculation based on cards instead of random
+        let strength = 0;
+        for (const card of cards) {
+            strength = (strength * 31 + card) % 7463;
+        }
+        return strength;
     }
     /**
      * Get all registered circuits

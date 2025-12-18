@@ -246,7 +246,8 @@ class TrustedSetupCeremonyManager {
      */
     generateInitialContribution() {
         const generateRandomField = () => {
-            const seed = `${Date.now()}-${Math.random()}-${Math.random()}`;
+            const randomBytes = crypto.randomBytes(32);
+            const seed = `${Date.now()}-${randomBytes.toString('hex')}`;
             const hash = (0, sha256_1.sha256)(seed);
             return BigInt('0x' + Buffer.from(hash).toString('hex')).toString();
         };
