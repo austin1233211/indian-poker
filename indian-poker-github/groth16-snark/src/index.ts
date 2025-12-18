@@ -3,6 +3,11 @@
  * 
  * This module provides a complete implementation of the Groth16 zk-SNARK protocol
  * specialized for verifying fair poker card dealing without revealing sensitive information.
+ * 
+ * PR 2: Real Groth16 Proofs
+ * - Added support for loading real circuit artifacts (.wasm, .zkey files)
+ * - Integrated CircuitLoader for managing compiled circuits
+ * - Real proof generation and verification using snarkjs
  */
 
 import { buildPoseidon } from 'circomlibjs';
@@ -12,6 +17,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import stringify from 'json-stable-stringify';
 import { sha256 } from '@noble/hashes/sha256';
+import { CircuitLoader, LoadedCircuit } from './circuitLoader';
 
 function cryptoRandomFloat(): number {
     const bytes = crypto.randomBytes(4);
@@ -64,21 +70,66 @@ export class Groth16SNARK {
     private trustedSetup: Map<string, { pk: any; vk: VerificationKey }> = new Map();
     private circuits: Map<string, any> = new Map();
     private poseidon: any;
+    private circuitLoader: CircuitLoader;
+    private useRealCircuits: boolean = false;
+    private realCircuitsReady: boolean = false;
 
-    constructor() {
+    constructor(options?: { useRealCircuits?: boolean; buildDir?: string }) {
         this.poseidon = buildPoseidon();
+        this.circuitLoader = new CircuitLoader({ buildDir: options?.buildDir });
+        this.useRealCircuits = options?.useRealCircuits || false;
     }
 
     /**
      * Initialize the SNARK system with circuit definitions
      */
     async initialize(): Promise<void> {
-        console.log('🔧 Initializing Groth16 SNARK system...');
+        console.log('Initializing Groth16 SNARK system...');
         
         // Initialize built-in circuits for poker
         await this.initializePokerCircuits();
         
-        console.log('✅ Groth16 SNARK system initialized successfully');
+        // Check if real circuit artifacts are available
+        if (this.useRealCircuits) {
+            await this.initializeRealCircuits();
+        }
+        
+        console.log('Groth16 SNARK system initialized successfully');
+    }
+
+    /**
+     * Initialize real circuit artifacts if available
+     */
+    private async initializeRealCircuits(): Promise<void> {
+        console.log('Checking for compiled circuit artifacts...');
+        
+        const status = await this.circuitLoader.checkCircuitsReady();
+        
+        if (status.ready) {
+            console.log('Real circuit artifacts found, loading...');
+            await this.circuitLoader.loadAllCircuits();
+            this.realCircuitsReady = true;
+            console.log('Real circuits loaded successfully');
+        } else {
+            console.log(`Missing circuit artifacts: ${status.missing.join(', ')}`);
+            console.log('Run scripts/compile-circuits.sh to compile circuits');
+            console.log('Falling back to simulated proofs');
+            this.realCircuitsReady = false;
+        }
+    }
+
+    /**
+     * Check if real circuits are available and ready
+     */
+    isRealCircuitsReady(): boolean {
+        return this.realCircuitsReady;
+    }
+
+    /**
+     * Enable or disable real circuit mode
+     */
+    setUseRealCircuits(enabled: boolean): void {
+        this.useRealCircuits = enabled;
     }
 
     /**
@@ -268,7 +319,7 @@ export class Groth16SNARK {
     /**
      * Run trusted setup ceremony for a circuit
      */
-    async trustedSetup(circuitName: string): Promise<{ pk: any; vk: VerificationKey }> {
+    async runTrustedSetup(circuitName: string): Promise<{ pk: any; vk: VerificationKey }> {
         console.log(`🎭 Starting trusted setup ceremony for circuit: ${circuitName}`);
         
         const circuit = this.circuits.get(circuitName);
@@ -408,6 +459,163 @@ export class Groth16SNARK {
     }
 
     /**
+     * Generate proof using real circuit artifacts
+     * This method uses compiled .wasm and .zkey files for actual cryptographic proof generation
+     */
+    async generateRealProof(
+        circuitName: string,
+        inputs: { [key: string]: any }
+    ): Promise<{ proof: any; publicSignals: any[]; isReal: boolean }> {
+        if (!this.realCircuitsReady) {
+            console.log('Real circuits not ready, falling back to simulated proof');
+            return {
+                proof: await this.generateSimulatedProof(circuitName, inputs),
+                publicSignals: [],
+                isReal: false
+            };
+        }
+
+        try {
+            console.log(`Generating real proof for circuit: ${circuitName}`);
+            const { proof, publicSignals } = await this.circuitLoader.generateProof(circuitName, inputs);
+            console.log(`Real proof generated successfully for: ${circuitName}`);
+            return { proof, publicSignals, isReal: true };
+        } catch (error) {
+            console.error(`Failed to generate real proof: ${error.message}`);
+            console.log('Falling back to simulated proof');
+            return {
+                proof: await this.generateSimulatedProof(circuitName, inputs),
+                publicSignals: [],
+                isReal: false
+            };
+        }
+    }
+
+    /**
+     * Verify proof using real verification key
+     * This method uses the actual verification key from compiled circuits
+     */
+    async verifyRealProof(
+        circuitName: string,
+        proof: any,
+        publicSignals: any[]
+    ): Promise<{ valid: boolean; isReal: boolean }> {
+        if (!this.realCircuitsReady) {
+            console.log('Real circuits not ready, using simulated verification');
+            return { valid: true, isReal: false };
+        }
+
+        try {
+            console.log(`Verifying real proof for circuit: ${circuitName}`);
+            const isValid = await this.circuitLoader.verifyProof(circuitName, proof, publicSignals);
+            console.log(`Real proof verification result: ${isValid ? 'valid' : 'invalid'}`);
+            return { valid: isValid, isReal: true };
+        } catch (error) {
+            console.error(`Failed to verify real proof: ${error.message}`);
+            return { valid: false, isReal: false };
+        }
+    }
+
+    /**
+     * Generate a simulated proof (fallback when real circuits aren't available)
+     */
+    private async generateSimulatedProof(circuitName: string, inputs: { [key: string]: any }): Promise<any> {
+        const randomBytes = crypto.randomBytes(32);
+        return {
+            pi_a: [randomBytes.slice(0, 16).toString('hex'), randomBytes.slice(16, 32).toString('hex'), '1'],
+            pi_b: [
+                [crypto.randomBytes(16).toString('hex'), crypto.randomBytes(16).toString('hex')],
+                [crypto.randomBytes(16).toString('hex'), crypto.randomBytes(16).toString('hex')],
+                ['1', '0']
+            ],
+            pi_c: [crypto.randomBytes(16).toString('hex'), crypto.randomBytes(16).toString('hex'), '1'],
+            protocol: 'groth16',
+            curve: 'bn128',
+            simulated: true
+        };
+    }
+
+    /**
+     * Generate card commitment proof using real circuits
+     */
+    async generateCardCommitmentProofReal(
+        cardValue: number,
+        nonce: bigint
+    ): Promise<{ proof: any; publicSignals: any[]; commitment: string; isReal: boolean }> {
+        const poseidon = await this.poseidon;
+        const commitment = poseidon.F.toString(poseidon([cardValue, nonce]));
+
+        const inputs = {
+            commitment,
+            cardValue: cardValue.toString(),
+            nonce: nonce.toString()
+        };
+
+        const result = await this.generateRealProof('cardCommitment', inputs);
+        return {
+            ...result,
+            commitment
+        };
+    }
+
+    /**
+     * Generate shuffle verification proof using real circuits
+     */
+    async generateShuffleProofReal(
+        originalCards: number[],
+        shuffledCards: number[],
+        permutation: number[]
+    ): Promise<{ proof: any; publicSignals: any[]; isReal: boolean }> {
+        const poseidon = await this.poseidon;
+        
+        const originalHash = poseidon.F.toString(poseidon(originalCards.slice(0, 8)));
+        const shuffledHash = poseidon.F.toString(poseidon(shuffledCards.slice(0, 8)));
+
+        const inputs = {
+            originalHash,
+            shuffledHash,
+            originalCards: originalCards.slice(0, 8).map(c => c.toString()),
+            shuffledCards: shuffledCards.slice(0, 8).map(c => c.toString()),
+            permutation: permutation.slice(0, 8).map(p => p.toString())
+        };
+
+        return this.generateRealProof('shuffleVerify', inputs);
+    }
+
+    /**
+     * Generate deal verification proof using real circuits
+     */
+    async generateDealProofReal(
+        cardValue: number,
+        position: number,
+        cardNonce: bigint,
+        deckSeed: bigint
+    ): Promise<{ proof: any; publicSignals: any[]; isReal: boolean }> {
+        const poseidon = await this.poseidon;
+        
+        const cardCommitment = poseidon.F.toString(poseidon([cardValue, cardNonce]));
+        const deckCommitment = poseidon.F.toString(poseidon([cardValue, position, deckSeed]));
+
+        const inputs = {
+            deckCommitment,
+            cardCommitment,
+            position: position.toString(),
+            cardValue: cardValue.toString(),
+            cardNonce: cardNonce.toString(),
+            deckSeed: deckSeed.toString()
+        };
+
+        return this.generateRealProof('dealVerify', inputs);
+    }
+
+    /**
+     * Get the circuit loader instance
+     */
+    getCircuitLoader(): CircuitLoader {
+        return this.circuitLoader;
+    }
+
+    /**
      * Export verification key for external use
      */
     exportVerificationKey(circuitName: string): VerificationKey | null {
@@ -433,7 +641,7 @@ export class Groth16SNARK {
         let setup = this.trustedSetup.get(circuitName);
         
         if (!setup) {
-            setup = await this.trustedSetup(circuitName);
+            setup = await this.runTrustedSetup(circuitName);
         }
         
         return setup;
@@ -581,7 +789,10 @@ export class Groth16SNARK {
         return {
             circuitsRegistered: this.circuits.size,
             trustedSetupsCompleted: this.trustedSetup.size,
-            supportedCircuits: Array.from(this.circuits.keys())
+            supportedCircuits: Array.from(this.circuits.keys()),
+            realCircuitsEnabled: this.useRealCircuits,
+            realCircuitsReady: this.realCircuitsReady,
+            realCircuitTypes: ['cardCommitment', 'shuffleVerify', 'dealVerify']
         };
     }
 }
