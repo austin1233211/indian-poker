@@ -9,8 +9,20 @@ import { buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import stringify from 'json-stable-stringify';
 import { sha256 } from '@noble/hashes/sha256';
+
+function cryptoRandomFloat(): number {
+    const bytes = crypto.randomBytes(4);
+    return bytes.readUInt32BE(0) / 0xFFFFFFFF;
+}
+
+function cryptoRandomInt(max: number): number {
+    if (max <= 0) return 0;
+    const bytes = crypto.randomBytes(4);
+    return bytes.readUInt32BE(0) % max;
+}
 
 export interface CircuitInputs {
     [key: string]: string | string[];
@@ -505,7 +517,7 @@ export class Groth16SNARK {
      */
     private shuffleArray<T>(array: T[], seed?: string): T[] {
         const result = [...array];
-        const random = seed ? this.seededRandom(seed) : Math.random;
+        const random = seed ? this.seededRandom(seed) : cryptoRandomFloat;
         
         for (let i = result.length - 1; i > 0; i--) {
             const j = Math.floor(random() * (i + 1));
@@ -536,7 +548,8 @@ export class Groth16SNARK {
      * Generate random seed
      */
     private generateRandomSeed(): string {
-        return Buffer.from(sha256(`seed-${Date.now()}-${Math.random()}`)).toString('hex');
+        const randomBytes = crypto.randomBytes(32);
+        return Buffer.from(sha256(`seed-${Date.now()}-${randomBytes.toString('hex')}`)).toString('hex');
     }
 
     /**
@@ -544,7 +557,8 @@ export class Groth16SNARK {
      */
     private generateRandomG1Point(): [string, string] {
         const rand = () => {
-            const seed = `${Date.now()}-${Math.random()}-${Math.random()}`;
+            const randomBytes = crypto.randomBytes(32);
+            const seed = `${Date.now()}-${randomBytes.toString('hex')}`;
             const hash = sha256(seed);
             return BigInt('0x' + Buffer.from(hash).toString('hex')).toString();
         };

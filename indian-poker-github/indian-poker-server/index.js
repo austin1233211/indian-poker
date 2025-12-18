@@ -34,6 +34,15 @@ const {
     SecureDealingIndex
 } = require('./security-utils');
 
+// ZK Proofs Configuration
+const ZK_CONFIG = {
+    enabled: process.env.ZK_PROOFS_ENABLED === 'true',
+    requireProofsForGameProgress: process.env.ZK_REQUIRE_PROOFS === 'true',
+    proofTimeout: parseInt(process.env.ZK_PROOF_TIMEOUT) || 30000,
+    verifyOnDeal: process.env.ZK_VERIFY_ON_DEAL !== 'false',
+    verifyOnShuffle: process.env.ZK_VERIFY_ON_SHUFFLE !== 'false'
+};
+
 // PIR Server Configuration
 const PIR_CONFIG = {
     enabled: process.env.PIR_ENABLED === 'true',
@@ -1048,7 +1057,10 @@ class IndianPokerServer {
                         continuousMonitoringEnabled: true,
                         auditLoggingEnabled: true,
                         verificationCheckpointsEnabled: true,
-                        secureDealingEnabled: true
+                        secureDealingEnabled: true,
+                        zkProofsEnabled: ZK_CONFIG.enabled,
+                        zkRequireProofsForProgress: ZK_CONFIG.requireProofsForGameProgress,
+                        pirEnabled: PIR_CONFIG.enabled
                     }
                 }));
             } else if (req.url === '/security/stats') {
@@ -1086,6 +1098,10 @@ class IndianPokerServer {
             console.log('Health check endpoint: http://localhost:' + port + '/health');
             console.log('WebSocket endpoint: ws://localhost:' + port);
             console.log('PIR Integration: ' + (PIR_CONFIG.enabled ? 'ENABLED' : 'DISABLED'));
+            console.log('ZK Proofs: ' + (ZK_CONFIG.enabled ? 'ENABLED' : 'DISABLED'));
+            if (ZK_CONFIG.enabled) {
+                console.log('ZK Proofs: Require proofs for game progress: ' + (ZK_CONFIG.requireProofsForGameProgress ? 'YES' : 'NO'));
+            }
             console.log('Security: Rate limiting ENABLED, Proof validation ENABLED');
             console.log('Security: WSS enforcement ' + (this.wssEnforcer.enforceWSS ? 'ENABLED' : 'DISABLED'));
         });
@@ -1638,11 +1654,70 @@ class IndianPokerServer {
     }
 
     /**
+     * Check if ZK proofs are required for game progression
+     * When ZK_CONFIG.requireProofsForGameProgress is true, the game cannot
+     * proceed to betting phase until proofs are generated
+     */
+    zkProofsRequired() {
+        return ZK_CONFIG.enabled && ZK_CONFIG.requireProofsForGameProgress;
+    }
+
+    /**
+     * Check if game can proceed based on ZK proof requirements
+     * Returns { canProceed: boolean, reason: string }
+     */
+    canGameProceed(game) {
+        if (!this.zkProofsRequired()) {
+            return { canProceed: true, reason: 'ZK proofs not required' };
+        }
+
+        if (!snarkVerifier.isAvailable()) {
+            return { 
+                canProceed: false, 
+                reason: 'ZK proofs required but SNARK system not available' 
+            };
+        }
+
+        if (!game.snarkEnabled) {
+            return { 
+                canProceed: false, 
+                reason: 'Waiting for ZK proofs to be generated' 
+            };
+        }
+
+        const hasRequiredProofs = (
+            (!ZK_CONFIG.verifyOnShuffle || game.proofs.shuffle !== null) &&
+            (!ZK_CONFIG.verifyOnDeal || game.proofs.dealing !== null)
+        );
+
+        if (!hasRequiredProofs) {
+            return { 
+                canProceed: false, 
+                reason: 'Required ZK proofs not yet generated' 
+            };
+        }
+
+        return { canProceed: true, reason: 'All required ZK proofs available' };
+    }
+
+    /**
      * Generate SNARK proofs for a game (runs asynchronously)
+     * When ZK_CONFIG.requireProofsForGameProgress is true, this will block
+     * game progression until proofs are generated
      */
     async generateGameProofs(room, deckStateBefore, deckStateAfter) {
         if (!snarkVerifier.isAvailable()) {
             console.log(`SNARK proofs not available for room ${room.id}`);
+            if (this.zkProofsRequired()) {
+                this.broadcastToRoom(room.id, null, {
+                    type: 'zk_proof_error',
+                    data: {
+                        gameId: room.game.gameId,
+                        error: 'SNARK system not available but ZK proofs are required',
+                        message: 'Game cannot proceed without ZK proofs. Please contact administrator.'
+                    }
+                });
+            }
             return;
         }
 
@@ -1734,6 +1809,13 @@ class IndianPokerServer {
             return;
         }
 
+        // ZK Proof Enforcement: Block betting until proofs are ready when required
+        const proofCheck = this.canGameProceed(room.game);
+        if (!proofCheck.canProceed) {
+            this.sendError(clientId, `Cannot place bet: ${proofCheck.reason}`);
+            return;
+        }
+
         // Security: Player must not have already folded
         if (player.hasFolded) {
             this.sendError(clientId, 'You have already folded');
@@ -1791,6 +1873,13 @@ class IndianPokerServer {
         // Security: Only allow folding during the betting phase
         if (room.game.currentRound !== 'betting') {
             this.sendError(clientId, 'Folding is only allowed during the betting phase');
+            return;
+        }
+
+        // ZK Proof Enforcement: Block folding until proofs are ready when required
+        const proofCheck = this.canGameProceed(room.game);
+        if (!proofCheck.canProceed) {
+            this.sendError(clientId, `Cannot fold: ${proofCheck.reason}`);
             return;
         }
 
