@@ -985,17 +985,40 @@ class IndianPokerServer {
             const securityCheck = this.wssEnforcer.checkConnection(req);
             if (!securityCheck.allowed) {
                 console.warn('Connection rejected: ' + securityCheck.reason);
+                this.auditLogger.logConnection('CONNECTION_REJECTED', {
+                    reason: securityCheck.reason,
+                    ip: req.socket.remoteAddress,
+                    origin: req.headers.origin
+                });
                 ws.close(1008, securityCheck.reason);
                 return;
             }
 
             const clientId = uuidv4();
+            const connectionTime = Date.now();
+            const clientIp = req.socket.remoteAddress || 'unknown';
+            const clientOrigin = req.headers.origin || 'unknown';
+
             console.log('New connection: ' + clientId + (securityCheck.warnings.length > 0 ? ' (warnings: ' + securityCheck.warnings.join(', ') + ')' : ''));
+
+            // Audit log the connection
+            this.auditLogger.logConnection('CONNECTION_ESTABLISHED', {
+                clientId,
+                ip: clientIp,
+                origin: clientOrigin,
+                warnings: securityCheck.warnings,
+                timestamp: connectionTime
+            });
 
             this.clients.set(clientId, {
                 ws: ws,
                 playerId: null,
-                roomId: null
+                roomId: null,
+                connectionTime: connectionTime,
+                ip: clientIp,
+                origin: clientOrigin,
+                messageCount: 0,
+                lastMessageTime: null
             });
 
             this.sendMessage(clientId, {
@@ -1012,6 +1035,25 @@ class IndianPokerServer {
 
             ws.on('message', (message) => {
                 try {
+                    const client = this.clients.get(clientId);
+                    if (client) {
+                        client.messageCount++;
+                        client.lastMessageTime = Date.now();
+
+                        // Rate limiting per connection (max 100 messages per minute)
+                        const timeSinceConnection = Date.now() - client.connectionTime;
+                        const messagesPerMinute = (client.messageCount / timeSinceConnection) * 60000;
+                        if (messagesPerMinute > 100) {
+                            this.auditLogger.logSecurity('RATE_LIMIT_EXCEEDED', {
+                                clientId,
+                                messagesPerMinute: Math.round(messagesPerMinute),
+                                ip: client.ip
+                            });
+                            this.sendError(clientId, 'Rate limit exceeded. Please slow down.');
+                            return;
+                        }
+                    }
+
                     const data = JSON.parse(message);
                     this.handleClientMessage(clientId, data);
                 } catch (error) {
@@ -1021,11 +1063,24 @@ class IndianPokerServer {
             });
 
             ws.on('close', () => {
+                const client = this.clients.get(clientId);
+                if (client) {
+                    this.auditLogger.logConnection('CONNECTION_CLOSED', {
+                        clientId,
+                        ip: client.ip,
+                        duration: Date.now() - client.connectionTime,
+                        messageCount: client.messageCount
+                    });
+                }
                 this.handleDisconnection(clientId);
             });
 
             ws.on('error', (error) => {
                 console.error('❌ WebSocket error:', error);
+                this.auditLogger.logSecurity('WEBSOCKET_ERROR', {
+                    clientId,
+                    error: error.message
+                });
                 this.handleDisconnection(clientId);
             });
         });
@@ -1312,6 +1367,23 @@ class IndianPokerServer {
         // at game end that the deck wasn't manipulated after dealing
         const deckCommitmentHash = room.game.commitToDeck();
         console.log(`🔐 Deck commitment hash for room ${room.id}: ${deckCommitmentHash.substring(0, 16)}...`);
+
+        // Send explicit deck_committed message for protocol clarity
+        this.broadcastToRoom(room.id, null, {
+            type: 'deck_committed',
+            data: {
+                gameId: room.game.gameId,
+                commitmentHash: deckCommitmentHash,
+                timestamp: Date.now(),
+                algorithm: 'SHA-256',
+                note: 'This commitment binds the server to the current deck order. Verify at game end.'
+            }
+        });
+
+        this.auditLogger.logDeckCommitment(room.game.gameId, deckCommitmentHash, {
+            roomId: room.id,
+            playerCount: room.players.size
+        });
         
         // Register deck with PIR before dealing if enabled
         if (this.pirClient.isEnabled()) {
@@ -1626,6 +1698,7 @@ class IndianPokerServer {
 
         // CRYPTOGRAPHIC FAIRNESS: Reveal the committed deck for verification
         const deckReveal = room.game.getDeckReveal();
+        const proofs = room.game.getProofs();
 
         this.broadcastToRoom(room.id, null, {
             type: 'game_ended',
@@ -1643,6 +1716,33 @@ class IndianPokerServer {
             }
         });
 
+        // Send explicit zk_proof_deal message with ZK proofs for client verification
+        if (proofs && (proofs.shuffleProof || proofs.dealingProof)) {
+            this.broadcastToRoom(room.id, null, {
+                type: 'zk_proof_deal',
+                data: {
+                    gameId: room.game.gameId,
+                    proofs: {
+                        shuffle: proofs.shuffleProof || null,
+                        dealing: proofs.dealingProof || null
+                    },
+                    verificationData: {
+                        deckCommitmentHash: deckReveal.deckCommitmentHash,
+                        dealingOrder: room.game.dealingOrder || null,
+                        dealingSeed: room.game.dealingSeed || null
+                    },
+                    timestamp: Date.now(),
+                    note: 'Use these proofs to verify the shuffle and dealing were fair. See CLIENT_VERIFICATION.md for verification code.'
+                }
+            });
+
+            this.auditLogger.logProofGeneration(room.game.gameId, 'zk_proof_deal_sent', {
+                hasShuffleProof: !!proofs.shuffleProof,
+                hasDealingProof: !!proofs.dealingProof,
+                roomId: room.id
+            });
+        }
+
         console.log(`🎉 Indian Poker game ended in room ${room.id}. Winner: ${result.winner.name}`);
         console.log(`🔓 Deck revealed for verification. Commitment hash: ${deckReveal.deckCommitmentHash.substring(0, 16)}...`);
     }
@@ -1657,6 +1757,7 @@ class IndianPokerServer {
 
                     // CRYPTOGRAPHIC FAIRNESS: Reveal the committed deck for verification
                     const deckReveal = room.game.getDeckReveal();
+                    const proofs = room.game.getProofs();
 
                     this.broadcastToRoom(room.id, null, {
                         type: 'game_ended',
@@ -1671,6 +1772,33 @@ class IndianPokerServer {
                             deckReveal: deckReveal
                         }
                     });
+
+                    // Send explicit zk_proof_deal message with ZK proofs for client verification
+                    if (proofs && (proofs.shuffleProof || proofs.dealingProof)) {
+                        this.broadcastToRoom(room.id, null, {
+                            type: 'zk_proof_deal',
+                            data: {
+                                gameId: room.game.gameId,
+                                proofs: {
+                                    shuffle: proofs.shuffleProof || null,
+                                    dealing: proofs.dealingProof || null
+                                },
+                                verificationData: {
+                                    deckCommitmentHash: deckReveal.deckCommitmentHash,
+                                    dealingOrder: room.game.dealingOrder || null,
+                                    dealingSeed: room.game.dealingSeed || null
+                                },
+                                timestamp: Date.now(),
+                                note: 'Use these proofs to verify the shuffle and dealing were fair. See CLIENT_VERIFICATION.md for verification code.'
+                            }
+                        });
+
+                        this.auditLogger.logProofGeneration(room.game.gameId, 'zk_proof_deal_sent', {
+                            hasShuffleProof: !!proofs.shuffleProof,
+                            hasDealingProof: !!proofs.dealingProof,
+                            roomId: room.id
+                        });
+                    }
 
                     console.log(`🎉 Indian Poker game ended in room ${room.id}. Winner: ${winner.name} (by default)`);
                     console.log(`🔓 Deck revealed for verification. Commitment hash: ${deckReveal.deckCommitmentHash.substring(0, 16)}...`);

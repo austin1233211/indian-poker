@@ -11,6 +11,47 @@
 const crypto = require('crypto');
 
 /**
+ * Constant-Time Comparison Utility
+ * Prevents timing attacks by ensuring comparisons take the same time
+ * regardless of where differences occur in the strings.
+ */
+class ConstantTimeCompare {
+    static compare(a, b) {
+        if (typeof a !== 'string' || typeof b !== 'string') {
+            return false;
+        }
+        
+        const bufA = Buffer.from(a, 'utf8');
+        const bufB = Buffer.from(b, 'utf8');
+        
+        if (bufA.length !== bufB.length) {
+            return false;
+        }
+        
+        return crypto.timingSafeEqual(bufA, bufB);
+    }
+
+    static compareHex(a, b) {
+        if (typeof a !== 'string' || typeof b !== 'string') {
+            return false;
+        }
+        
+        try {
+            const bufA = Buffer.from(a, 'hex');
+            const bufB = Buffer.from(b, 'hex');
+            
+            if (bufA.length !== bufB.length) {
+                return false;
+            }
+            
+            return crypto.timingSafeEqual(bufA, bufB);
+        } catch (e) {
+            return false;
+        }
+    }
+}
+
+/**
  * Distributed Randomness Generation
  * Implements a commit-reveal scheme where each player contributes entropy
  * to the final shuffle seed, ensuring no single party controls randomness.
@@ -761,6 +802,10 @@ class AuditLogger {
         return this.log('WARN', 'SECURITY', event, details);
     }
 
+    logConnection(event, details) {
+        return this.log('INFO', 'CONNECTION', event, details);
+    }
+
     logError(event, details) {
         return this.log('ERROR', 'ERROR', event, details);
     }
@@ -900,7 +945,7 @@ class VerificationCheckpoint {
 
         const currentHash = this.hashState(currentState);
         
-        if (currentState.deckCommitment !== checkpoint.state.deckCommitment) {
+        if (!ConstantTimeCompare.compareHex(currentState.deckCommitment, checkpoint.state.deckCommitment)) {
             return { 
                 valid: false, 
                 error: 'Deck commitment changed since checkpoint',
@@ -1007,6 +1052,7 @@ class SecureDealingIndex {
 }
 
 module.exports = {
+    ConstantTimeCompare,
     DistributedRandomness,
     CryptoRateLimiter,
     ProofValidator,

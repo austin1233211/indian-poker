@@ -379,6 +379,105 @@ To test the security enhancements:
 3. **Distributed Randomness**: Use the new message types to participate in the commit-reveal protocol
 4. **Nonce Verification**: Check that deck reveals include nonce and timestamp
 
+---
+
+# Phase 3 Security Enhancements
+
+## Overview
+
+Phase 3 focuses on protocol-level security improvements including explicit WebSocket message types for cryptographic operations, enhanced connection security, and timing attack prevention.
+
+## New Security Features
+
+### 1. Explicit WebSocket Message Types
+
+**deck_committed Message**
+- Sent immediately after deck commitment, before dealing
+- Contains: gameId, commitmentHash, timestamp, algorithm
+- Provides clear protocol separation for client verification
+
+**zk_proof_deal Message**
+- Sent at game end with ZK proofs for verification
+- Contains: shuffle proof, dealing proof, verification data
+- Enables client-side verification of game fairness
+
+### 2. Enhanced WebSocket Authentication
+
+**Connection Audit Logging**
+- All connections logged with IP, origin, and timestamp
+- Connection rejections logged with reason
+- Connection closures logged with duration and message count
+
+**Per-Connection Rate Limiting**
+- Maximum 100 messages per minute per connection
+- Prevents message flooding attacks
+- Rate limit violations logged to audit trail
+
+**Connection Metadata Tracking**
+- Connection time, IP address, origin tracked
+- Message count and last message time monitored
+- Enables anomaly detection and forensics
+
+### 3. Constant-Time Comparison Utility
+
+**ConstantTimeCompare Class**
+- Prevents timing attacks on secret comparisons
+- Uses Node.js crypto.timingSafeEqual
+- Methods: compare() for strings, compareHex() for hex strings
+
+**Usage in Verification**
+- Deck commitment comparisons use constant-time comparison
+- Prevents attackers from inferring hash values through timing
+
+## Implementation Details
+
+### WebSocket Message Flow
+
+```
+Game Start:
+1. Server shuffles deck
+2. Server commits to deck → broadcasts 'deck_committed' message
+3. Server deals cards → sends 'game_started' with commitment hash
+
+Game End:
+1. Server reveals deck → broadcasts 'game_ended' with deck reveal
+2. Server sends ZK proofs → broadcasts 'zk_proof_deal' message
+3. Clients can verify: commitment matches revealed deck, proofs valid
+```
+
+### Connection Security Flow
+
+```
+New Connection:
+1. WSS enforcement check
+2. If rejected: log rejection, close connection
+3. If allowed: generate clientId, log connection
+4. Track connection metadata (time, IP, origin)
+
+Message Handling:
+1. Increment message count
+2. Check rate limit (100 msg/min)
+3. If exceeded: log violation, reject message
+4. Process message normally
+
+Connection Close:
+1. Log connection duration and message count
+2. Clean up client resources
+```
+
+### Files Modified
+
+- `security-utils.js`: Added ConstantTimeCompare class, logConnection method
+- `index.js`: Enhanced setupWebSocketHandlers with audit logging and rate limiting, added deck_committed and zk_proof_deal message broadcasts
+
+## Security Benefits
+
+1. **Protocol Clarity**: Explicit message types make verification easier for clients
+2. **Audit Trail**: Complete connection lifecycle logging for forensics
+3. **Rate Limiting**: Per-connection limits prevent abuse
+4. **Timing Attack Prevention**: Constant-time comparisons protect secrets
+5. **Anomaly Detection**: Connection metadata enables pattern analysis
+
 ## Conclusion
 
 These security enhancements significantly improve the cryptographic security of the Indian Poker system by addressing the most critical vulnerabilities identified in the security analysis. The modular design allows for easy maintenance and future enhancements.
