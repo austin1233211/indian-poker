@@ -19,6 +19,16 @@ const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
 
+// Import security utilities
+const {
+    DistributedRandomness,
+    CryptoRateLimiter,
+    ProofValidator,
+    EnhancedCardHasher,
+    WSSEnforcer,
+    NonceGenerator
+} = require('./security-utils');
+
 // PIR Server Configuration
 const PIR_CONFIG = {
     enabled: process.env.PIR_ENABLED === 'true',
@@ -474,32 +484,57 @@ class TeenPattiGame {
         this.deckRevealed = false;           // Whether deck has been revealed
         this.playerSeatIndices = new Map();  // Map playerId -> seatIndex for verifiable dealing
         this.nextSeatIndex = 0;              // Counter for assigning seat indices
+
+        // Security Enhancement: Cryptographic nonce for deck commitment
+        // Prevents hash precomputation attacks by adding randomness to each game
+        this.deckNonce = null;               // Cryptographic nonce for this game
+        this.commitmentTimestamp = null;     // Timestamp when commitment was made
+
+        // Security Enhancement: Distributed randomness
+        // Allows players to contribute entropy to shuffle seed
+        this.distributedRandomness = new DistributedRandomness();
+        this.useDistributedRandomness = false; // Enable when players contribute seeds
+
+        // Security Enhancement: Enhanced card hasher with game secrets
+        this.cardHasher = new EnhancedCardHasher();
+        this.gameSecret = null;              // Derived from player seeds
     }
 
     /**
      * Serialize deck in canonical format for commitment hash
-     * Format: "gameId:index:rank:suit|gameId:index:rank:suit|..."
+     * SECURITY ENHANCEMENT: Now includes cryptographic nonce to prevent hash precomputation
+     * Format: "gameId:nonce:index:rank:suit|gameId:nonce:index:rank:suit|..."
      * This format is deterministic and can be verified by clients
      */
     serializeDeck(deckArray) {
+        // Generate cryptographic nonce if not already set
+        if (!this.deckNonce) {
+            this.deckNonce = NonceGenerator.generate();
+        }
+        
         const parts = deckArray.map((card, index) =>
-            `${this.gameId}:${index}:${card.rank}:${card.suit}`
+            `${this.gameId}:${this.deckNonce}:${index}:${card.rank}:${card.suit}`
         );
         return parts.join('|');
     }
 
     /**
      * Create commitment to deck order (call after shuffle, before dealing)
+     * SECURITY ENHANCEMENT: Now includes cryptographic nonce and timestamp
      * Returns the commitment hash that should be broadcast to all players
      */
     commitToDeck() {
+        // Generate cryptographic nonce for this commitment
+        this.deckNonce = NonceGenerator.generate();
+        this.commitmentTimestamp = Date.now();
+
         // Snapshot the shuffled deck order
         this.committedDeckOrder = this.deck.shuffledDeck.map(card => ({
             rank: card.rank,
             suit: card.suit
         }));
 
-        // Create canonical serialization and hash it
+        // Create canonical serialization and hash it (now includes nonce)
         const serialized = this.serializeDeck(this.committedDeckOrder);
         this.deckCommitmentHash = crypto.createHash('sha256').update(serialized).digest('hex');
 
@@ -508,16 +543,19 @@ class TeenPattiGame {
 
     /**
      * Get deck reveal data for verification at game end
+     * SECURITY ENHANCEMENT: Now includes nonce and timestamp for verification
      * Clients can verify: SHA-256(serializeDeck(committedDeckOrder)) === deckCommitmentHash
      */
     getDeckReveal() {
         this.deckRevealed = true;
         return {
             gameId: this.gameId,
+            nonce: this.deckNonce, // Include nonce in reveal for verification
             deckCommitmentHash: this.deckCommitmentHash,
             committedDeckOrder: this.committedDeckOrder,
+            timestamp: this.commitmentTimestamp,
             playerSeatIndices: Object.fromEntries(this.playerSeatIndices),
-            verificationInstructions: 'To verify: serialize deck as "gameId:index:rank:suit|..." and compute SHA-256. Hash should match deckCommitmentHash. Player with seatIndex N received card at index N.'
+            verificationInstructions: 'To verify: serialize deck as "gameId:nonce:index:rank:suit|..." and compute SHA-256(gameId:nonce:index:rank:suit|...). Hash should match deckCommitmentHash. Player with seatIndex N received card at index N.'
         };
     }
 
@@ -819,11 +857,33 @@ class IndianPokerServer {
     constructor(port = 8080) {
         this.port = port;
         
+        // Security Enhancement: Initialize security utilities
+        this.rateLimiter = new CryptoRateLimiter({
+            maxProofsPerHour: 10,
+            maxCommitmentsPerHour: 20,
+            windowMs: 3600000 // 1 hour
+        });
+        this.proofValidator = new ProofValidator({
+            proofExpiration: 3600000, // 1 hour
+            cleanupInterval: 300000 // 5 minutes
+        });
+        this.wssEnforcer = new WSSEnforcer({
+            allowedOrigins: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : []
+        });
+
         // Create HTTP server for health checks (required for Railway deployment)
         this.httpServer = http.createServer((req, res) => {
             if (req.url === '/' || req.url === '/health') {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ status: 'ok', service: 'indian-poker-server' }));
+                res.end(JSON.stringify({ 
+                    status: 'ok', 
+                    service: 'indian-poker-server',
+                    security: {
+                        wssEnforced: this.wssEnforcer.enforceWSS,
+                        rateLimitingEnabled: true,
+                        proofValidationEnabled: true
+                    }
+                }));
             } else {
                 res.writeHead(404, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Not Found' }));
@@ -847,6 +907,8 @@ class IndianPokerServer {
             console.log('Health check endpoint: http://localhost:' + port + '/health');
             console.log('WebSocket endpoint: ws://localhost:' + port);
             console.log('PIR Integration: ' + (PIR_CONFIG.enabled ? 'ENABLED' : 'DISABLED'));
+            console.log('Security: Rate limiting ENABLED, Proof validation ENABLED');
+            console.log('Security: WSS enforcement ' + (this.wssEnforcer.enforceWSS ? 'ENABLED' : 'DISABLED'));
         });
     }
 
@@ -882,9 +944,17 @@ class IndianPokerServer {
     }
 
     setupWebSocketHandlers() {
-        this.wss.on('connection', (ws) => {
+        this.wss.on('connection', (ws, req) => {
+            // Security Enhancement: WSS enforcement check
+            const securityCheck = this.wssEnforcer.checkConnection(req);
+            if (!securityCheck.allowed) {
+                console.warn('Connection rejected: ' + securityCheck.reason);
+                ws.close(1008, securityCheck.reason);
+                return;
+            }
+
             const clientId = uuidv4();
-            console.log('New connection: ' + clientId);
+            console.log('New connection: ' + clientId + (securityCheck.warnings.length > 0 ? ' (warnings: ' + securityCheck.warnings.join(', ') + ')' : ''));
 
             this.clients.set(clientId, {
                 ws: ws,
@@ -896,7 +966,11 @@ class IndianPokerServer {
                 type: 'connection_established',
                 data: {
                     clientId: clientId,
-                    message: 'Welcome to Indian Poker Server!'
+                    message: 'Welcome to Indian Poker Server!',
+                    security: {
+                        wssEnforced: this.wssEnforcer.enforceWSS,
+                        warnings: securityCheck.warnings
+                    }
                 }
             });
 
@@ -974,6 +1048,16 @@ class IndianPokerServer {
                     break;
                 case 'get_card_proof':
                     this.handleGetCardProof(clientId, messageData);
+                    break;
+                // Security Enhancement: Distributed randomness message handlers
+                case 'commit_randomness':
+                    this.handleCommitRandomness(clientId, messageData);
+                    break;
+                case 'reveal_randomness':
+                    this.handleRevealRandomness(clientId, messageData);
+                    break;
+                case 'get_randomness_status':
+                    this.handleGetRandomnessStatus(clientId);
                     break;
                 default:
                     this.sendError(clientId, `Unknown message type: ${type}`);
@@ -1565,8 +1649,22 @@ class IndianPokerServer {
 
     /**
      * Handle request to verify a specific proof
+     * SECURITY ENHANCEMENT: Added rate limiting and proof replay protection
      */
     async handleVerifyProof(clientId, data) {
+        // Security Enhancement: Rate limiting check
+        const rateLimitCheck = this.rateLimiter.checkLimit(clientId, 'proof_verification');
+        if (!rateLimitCheck.allowed) {
+            this.sendMessage(clientId, {
+                type: 'proof_verification',
+                data: {
+                    success: false,
+                    error: 'Rate limit exceeded. Try again in ' + Math.ceil(rateLimitCheck.retryAfter / 1000) + ' seconds'
+                }
+            });
+            return;
+        }
+
         if (!snarkVerifier.isAvailable()) {
             this.sendMessage(clientId, {
                 type: 'proof_verification',
@@ -1584,8 +1682,30 @@ class IndianPokerServer {
             return;
         }
 
+        // Security Enhancement: Proof validation with replay protection
+        const proofValidation = this.proofValidator.validateProof(proof);
+        if (!proofValidation.valid) {
+            this.sendMessage(clientId, {
+                type: 'proof_verification',
+                data: {
+                    success: false,
+                    error: proofValidation.reason
+                }
+            });
+            return;
+        }
+
         try {
             const result = await snarkVerifier.verifyProof(proof);
+            
+            // Record the operation for rate limiting
+            this.rateLimiter.recordOperation(clientId, 'proof_verification');
+            
+            // Mark proof as used to prevent replay
+            if (result.valid) {
+                this.proofValidator.markProofUsed(proof);
+            }
+
             this.sendMessage(clientId, {
                 type: 'proof_verification',
                 data: {
@@ -1721,6 +1841,134 @@ class IndianPokerServer {
             console.error('Card proof request failed:', error);
             this.sendError(clientId, 'Card proof request failed');
         }
+    }
+
+    /**
+     * Security Enhancement: Handle player randomness commitment
+     * Players commit to a hash of their random seed before revealing
+     */
+    handleCommitRandomness(clientId, data) {
+        const client = this.clients.get(clientId);
+        if (!client || !client.roomId) {
+            this.sendError(clientId, 'Not in a room');
+            return;
+        }
+
+        const room = this.roomManager.getRoom(client.roomId);
+        if (!room || !room.game) {
+            this.sendError(clientId, 'No active game');
+            return;
+        }
+
+        const { commitment } = data || {};
+        if (!commitment || typeof commitment !== 'string' || commitment.length !== 64) {
+            this.sendError(clientId, 'Invalid commitment format (expected 64-char hex hash)');
+            return;
+        }
+
+        try {
+            room.game.distributedRandomness.addCommitment(clientId, commitment);
+            
+            this.sendMessage(clientId, {
+                type: 'randomness_committed',
+                data: { success: true, playerId: clientId }
+            });
+
+            this.broadcastToRoom(client.roomId, clientId, {
+                type: 'player_committed_randomness',
+                data: { playerId: clientId }
+            });
+
+            if (room.game.distributedRandomness.commitmentPhaseComplete) {
+                this.broadcastToRoom(client.roomId, null, {
+                    type: 'commitment_phase_complete',
+                    data: { message: 'All players have committed. Ready for reveal phase.' }
+                });
+            }
+        } catch (error) {
+            this.sendError(clientId, error.message);
+        }
+    }
+
+    /**
+     * Security Enhancement: Handle player randomness reveal
+     * Players reveal their actual seed after all commitments are in
+     */
+    handleRevealRandomness(clientId, data) {
+        const client = this.clients.get(clientId);
+        if (!client || !client.roomId) {
+            this.sendError(clientId, 'Not in a room');
+            return;
+        }
+
+        const room = this.roomManager.getRoom(client.roomId);
+        if (!room || !room.game) {
+            this.sendError(clientId, 'No active game');
+            return;
+        }
+
+        const { seed } = data || {};
+        if (!seed || typeof seed !== 'string') {
+            this.sendError(clientId, 'Invalid seed format');
+            return;
+        }
+
+        try {
+            const result = room.game.distributedRandomness.addReveal(clientId, seed);
+            
+            this.sendMessage(clientId, {
+                type: 'randomness_revealed',
+                data: { success: true, playerId: clientId }
+            });
+
+            this.broadcastToRoom(client.roomId, clientId, {
+                type: 'player_revealed_randomness',
+                data: { playerId: clientId }
+            });
+
+            if (room.game.distributedRandomness.revealPhaseComplete) {
+                const finalSeed = room.game.distributedRandomness.getFinalSeed();
+                room.game.gameSecret = finalSeed;
+                room.game.useDistributedRandomness = true;
+
+                this.broadcastToRoom(client.roomId, null, {
+                    type: 'randomness_finalized',
+                    data: { 
+                        message: 'Distributed randomness finalized',
+                        seedHash: require('crypto').createHash('sha256').update(finalSeed).digest('hex').substring(0, 16)
+                    }
+                });
+            }
+        } catch (error) {
+            this.sendError(clientId, error.message);
+        }
+    }
+
+    /**
+     * Security Enhancement: Get current randomness status for the game
+     */
+    handleGetRandomnessStatus(clientId) {
+        const client = this.clients.get(clientId);
+        if (!client || !client.roomId) {
+            this.sendError(clientId, 'Not in a room');
+            return;
+        }
+
+        const room = this.roomManager.getRoom(client.roomId);
+        if (!room || !room.game) {
+            this.sendError(clientId, 'No active game');
+            return;
+        }
+
+        const status = room.game.distributedRandomness.getStatus();
+        
+        this.sendMessage(clientId, {
+            type: 'randomness_status',
+            data: {
+                ...status,
+                useDistributedRandomness: room.game.useDistributedRandomness
+            }
+        });
     }
 
     handleDisconnection(clientId) {
