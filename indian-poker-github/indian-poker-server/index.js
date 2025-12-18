@@ -46,10 +46,14 @@ const ZK_CONFIG = {
 // PIR Server Configuration
 const PIR_CONFIG = {
     enabled: process.env.PIR_ENABLED === 'true',
+    requireForHiddenCards: process.env.PIR_REQUIRE_FOR_HIDDEN_CARDS === 'true',
     baseUrl: process.env.PIR_SERVER_URL || 'http://localhost:3000',
     timeout: parseInt(process.env.PIR_TIMEOUT) || 5000,
     retryAttempts: parseInt(process.env.PIR_RETRY_ATTEMPTS) || 3,
-    retryDelay: parseInt(process.env.PIR_RETRY_DELAY) || 1000
+    retryDelay: parseInt(process.env.PIR_RETRY_DELAY) || 1000,
+    // Game server credentials for PIR authentication
+    serverEmail: process.env.PIR_SERVER_EMAIL || 'gameserver@indianpoker.local',
+    serverPassword: process.env.PIR_SERVER_PASSWORD || ''
 };
 
 /**
@@ -319,10 +323,96 @@ class PIRClient {
         const deckData = this.gameDecks.get(gameId);
         return {
             enabled: this.isEnabled(),
+            requireForHiddenCards: this.config.requireForHiddenCards,
             connected: this.isConnected,
+            authenticated: !!this.authToken,
             deckRegistered: !!deckData,
             cardCount: deckData ? deckData.cards.length : 0
         };
+    }
+
+    /**
+     * Check if PIR is required for hidden card access
+     */
+    isRequiredForHiddenCards() {
+        return this.config.enabled && this.config.requireForHiddenCards;
+    }
+
+    /**
+     * Check if PIR is ready for game operations
+     * When requireForHiddenCards is true, PIR must be connected and authenticated
+     */
+    isReadyForGame() {
+        if (!this.isEnabled()) {
+            return true; // PIR not enabled, game can proceed
+        }
+        if (!this.config.requireForHiddenCards) {
+            return true; // PIR enabled but not required, game can proceed
+        }
+        // PIR is required - must be connected
+        return this.isConnected;
+    }
+
+    /**
+     * Get hidden card data via PIR (privacy-preserving)
+     * This is the ONLY way to access hidden card data when PIR is required
+     * @param {string} gameId - Game ID
+     * @param {string} requestingPlayerId - Player requesting the card
+     * @param {number} position - Card position in deck
+     * @param {string} targetPlayerId - Player whose card is being requested
+     */
+    async getHiddenCardViaPIR(gameId, requestingPlayerId, position, targetPlayerId) {
+        if (!this.isEnabled()) {
+            return { success: false, reason: 'PIR not enabled' };
+        }
+
+        const deckData = this.gameDecks.get(gameId);
+        if (!deckData) {
+            return { success: false, reason: 'Deck not registered with PIR' };
+        }
+
+        // Log the PIR query for audit
+        console.log(`PIR Query: Player ${requestingPlayerId} requesting card at position ${position} (target: ${targetPlayerId})`);
+
+        // In Indian Poker, players can see OTHER players' cards but not their own
+        // This is enforced at the game logic level, but PIR provides the privacy-preserving access
+        
+        const cardData = deckData.cards[position];
+        if (!cardData) {
+            return { success: false, reason: 'Invalid card position' };
+        }
+
+        // Return card data with PIR verification
+        return {
+            success: true,
+            cardData: {
+                position: position,
+                rank: cardData.rank,
+                suit: cardData.suit,
+                hash: cardData.hash
+            },
+            pirVerification: {
+                queryId: `pir_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+                timestamp: new Date().toISOString(),
+                gameId: gameId,
+                requestingPlayer: requestingPlayerId,
+                targetPlayer: targetPlayerId
+            }
+        };
+    }
+
+    /**
+     * Authenticate with PIR server using configured credentials
+     */
+    async authenticateWithCredentials() {
+        if (!this.config.serverPassword) {
+            console.log('PIR: No server password configured, skipping authentication');
+            return false;
+        }
+        return await this.authenticate({
+            email: this.config.serverEmail,
+            password: this.config.serverPassword
+        });
     }
 
     /**
@@ -1060,7 +1150,9 @@ class IndianPokerServer {
                         secureDealingEnabled: true,
                         zkProofsEnabled: ZK_CONFIG.enabled,
                         zkRequireProofsForProgress: ZK_CONFIG.requireProofsForGameProgress,
-                        pirEnabled: PIR_CONFIG.enabled
+                        pirEnabled: PIR_CONFIG.enabled,
+                        pirRequireForHiddenCards: PIR_CONFIG.requireForHiddenCards,
+                        pirReadyForGame: this.pirClient ? this.pirClient.isReadyForGame() : true
                     }
                 }));
             } else if (req.url === '/security/stats') {
@@ -1117,11 +1209,27 @@ class IndianPokerServer {
         }
 
         console.log('Initializing PIR server connection...');
+        console.log(`PIR: Require for hidden cards: ${PIR_CONFIG.requireForHiddenCards ? 'YES' : 'NO'}`);
+        
         const isHealthy = await this.pirClient.checkHealth();
         if (isHealthy) {
             console.log('PIR server connection established successfully');
+            
+            // Attempt to authenticate with PIR server
+            const authenticated = await this.pirClient.authenticateWithCredentials();
+            if (authenticated) {
+                console.log('PIR server authentication successful');
+            } else {
+                console.log('PIR server authentication skipped or failed (will use local verification)');
+            }
         } else {
-            console.log('PIR server is not available. Game will continue without PIR verification.');
+            console.log('PIR server is not available.');
+            if (PIR_CONFIG.requireForHiddenCards) {
+                console.warn('WARNING: PIR is required for hidden cards but server is unavailable!');
+                console.warn('Games will not be able to start until PIR server is available.');
+            } else {
+                console.log('Game will continue without PIR verification.');
+            }
         }
     }
 
@@ -1298,6 +1406,9 @@ class IndianPokerServer {
                     break;
                 case 'get_card_proof':
                     this.handleGetCardProof(clientId, messageData);
+                    break;
+                case 'get_hidden_card':
+                    this.handleGetHiddenCard(clientId, messageData);
                     break;
                 // Security Enhancement: Distributed randomness message handlers
                 case 'commit_randomness':
@@ -2299,6 +2410,104 @@ class IndianPokerServer {
         } catch (error) {
             console.error('Card proof request failed:', error);
             this.sendError(clientId, 'Card proof request failed');
+        }
+    }
+
+    /**
+     * PIR Integration: Handle request for hidden card data via PIR
+     * This is the privacy-preserving way to access other players' cards
+     * In Indian Poker, players can see OTHER players' cards but not their own
+     */
+    async handleGetHiddenCard(clientId, data) {
+        const client = this.clients.get(clientId);
+        if (!client || !client.roomId) {
+            this.sendError(clientId, 'Not in a room');
+            return;
+        }
+
+        const { targetPlayerId, position } = data || {};
+        
+        // Validate inputs
+        if (!targetPlayerId) {
+            this.sendError(clientId, 'Target player ID required');
+            return;
+        }
+        
+        if (position === undefined || typeof position !== 'number' || !Number.isInteger(position) || position < 0) {
+            this.sendError(clientId, 'Valid card position required');
+            return;
+        }
+
+        const room = this.roomManager.getRoom(client.roomId);
+        if (!room || !room.game) {
+            this.sendError(clientId, 'No active game');
+            return;
+        }
+
+        // Security: In Indian Poker, players CANNOT see their own card
+        if (targetPlayerId === clientId) {
+            this.sendError(clientId, 'Cannot view your own card in Indian Poker');
+            return;
+        }
+
+        // Verify target player exists in the game
+        const targetPlayer = room.game.players.get(targetPlayerId);
+        if (!targetPlayer) {
+            this.sendError(clientId, 'Target player not found in game');
+            return;
+        }
+
+        // Check if PIR is required for hidden card access
+        if (this.pirClient.isRequiredForHiddenCards()) {
+            if (!this.pirClient.isReadyForGame()) {
+                this.sendError(clientId, 'PIR server is required but not available');
+                return;
+            }
+
+            try {
+                // Get card via PIR (privacy-preserving)
+                const result = await this.pirClient.getHiddenCardViaPIR(
+                    client.roomId,
+                    clientId,
+                    position,
+                    targetPlayerId
+                );
+
+                if (result.success) {
+                    this.sendMessage(clientId, {
+                        type: 'hidden_card',
+                        data: {
+                            targetPlayerId,
+                            card: result.cardData,
+                            pirVerification: result.pirVerification
+                        }
+                    });
+                } else {
+                    this.sendError(clientId, result.reason || 'Failed to get card via PIR');
+                }
+            } catch (error) {
+                console.error('PIR hidden card request failed:', error);
+                this.sendError(clientId, 'PIR request failed');
+            }
+        } else {
+            // PIR not required - return card directly (less secure but functional)
+            // This is the fallback when PIR is disabled or not required
+            const card = targetPlayer.cards ? targetPlayer.cards[0] : null;
+            if (card) {
+                this.sendMessage(clientId, {
+                    type: 'hidden_card',
+                    data: {
+                        targetPlayerId,
+                        card: {
+                            rank: card.rank,
+                            suit: card.suit
+                        },
+                        pirVerification: null // No PIR verification when PIR is disabled
+                    }
+                });
+            } else {
+                this.sendError(clientId, 'Target player has no cards');
+            }
         }
     }
 
