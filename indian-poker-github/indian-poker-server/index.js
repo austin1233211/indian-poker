@@ -36,8 +36,8 @@ const {
 
 // ZK Proofs Configuration
 const ZK_CONFIG = {
-    enabled: process.env.ZK_PROOFS_ENABLED === 'true',
-    requireProofsForGameProgress: process.env.ZK_REQUIRE_PROOFS === 'true',
+    enabled: process.env.ZK_PROOFS_ENABLED !== 'false', // Enabled by default
+    requireProofsForGameProgress: process.env.ZK_REQUIRE_PROOFS !== 'false', // Required by default
     proofTimeout: parseInt(process.env.ZK_PROOF_TIMEOUT) || 30000,
     verifyOnDeal: process.env.ZK_VERIFY_ON_DEAL !== 'false',
     verifyOnShuffle: process.env.ZK_VERIFY_ON_SHUFFLE !== 'false'
@@ -45,8 +45,8 @@ const ZK_CONFIG = {
 
 // PIR Server Configuration
 const PIR_CONFIG = {
-    enabled: process.env.PIR_ENABLED === 'true',
-    requireForHiddenCards: process.env.PIR_REQUIRE_FOR_HIDDEN_CARDS === 'true',
+    enabled: process.env.PIR_ENABLED !== 'false', // Enabled by default
+    requireForHiddenCards: process.env.PIR_REQUIRE_FOR_HIDDEN_CARDS !== 'false', // Required by default
     baseUrl: process.env.PIR_SERVER_URL || 'http://localhost:3000',
     timeout: parseInt(process.env.PIR_TIMEOUT) || 5000,
     retryAttempts: parseInt(process.env.PIR_RETRY_ATTEMPTS) || 3,
