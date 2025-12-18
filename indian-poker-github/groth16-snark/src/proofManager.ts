@@ -9,6 +9,7 @@ import Groth16SNARK, { CardDealProof, CircuitInputs } from './index';
 import PokerCircuitBuilder, { PokerCircuitInputs } from './pokerCircuits';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import stringify from 'json-stable-stringify';
 import { sha256 } from '@noble/hashes/sha256';
 
@@ -565,7 +566,8 @@ export class PokerProofManager {
      * Generate random seed
      */
     private generateRandomSeed(): string {
-        return `seed-${Date.now()}-${Math.random()}`;
+        const randomBytes = crypto.randomBytes(16);
+        return `seed-${Date.now()}-${randomBytes.toString('hex')}`;
     }
 
     /**

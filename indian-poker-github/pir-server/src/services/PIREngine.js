@@ -1,4 +1,5 @@
 const { Logger } = require('../utils/Logger');
+const crypto = require('crypto');
 
 /**
  * PIR Engine for Private Information Retrieval
@@ -429,7 +430,8 @@ class PIREngine {
    * @returns {string} Unique query identifier
    */
   generateQueryId() {
-    return `pir_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const randomBytes = crypto.randomBytes(9).toString('hex').substr(0, 9);
+    return `pir_${Date.now()}_${randomBytes}`;
   }
 
   /**

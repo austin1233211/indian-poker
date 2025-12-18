@@ -7,6 +7,7 @@
 
 import { buildPoseidon } from 'circomlibjs';
 import { sha256 } from '@noble/hashes/sha256';
+import * as crypto from 'crypto';
 
 export interface PokerCircuitConfig {
     name: string;
@@ -618,16 +619,22 @@ export class PokerCircuitBuilder {
      * Generate random seed
      */
     private generateRandomSeed(): string {
-        return `seed-${Date.now()}-${Math.random()}`;
+        const randomBytes = crypto.randomBytes(16);
+        return `seed-${Date.now()}-${randomBytes.toString('hex')}`;
     }
 
     /**
      * Calculate hand strength (simplified)
      */
     private calculateHandStrength(cards: number[]): number {
-        // Simplified hand strength calculation
-        // In reality, this would evaluate poker hands
-        return Math.floor(Math.random() * 7463); // 0-7462 range
+        // Simplified hand strength calculation based on card values
+        // In reality, this would evaluate poker hands properly
+        // Using deterministic calculation based on cards instead of random
+        let strength = 0;
+        for (const card of cards) {
+            strength = (strength * 31 + card) % 7463;
+        }
+        return strength;
     }
 
     /**

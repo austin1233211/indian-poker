@@ -343,7 +343,8 @@ export class TrustedSetupCeremonyManager {
      */
     private generateInitialContribution(): CeremonyContribution {
         const generateRandomField = () => {
-            const seed = `${Date.now()}-${Math.random()}-${Math.random()}`;
+            const randomBytes = crypto.randomBytes(32);
+            const seed = `${Date.now()}-${randomBytes.toString('hex')}`;
             const hash = sha256(seed);
             return BigInt('0x' + Buffer.from(hash).toString('hex')).toString();
         };

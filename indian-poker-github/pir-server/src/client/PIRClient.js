@@ -3,6 +3,18 @@
  * JavaScript/TypeScript client library for integrating with PIR Server
  */
 
+const crypto = typeof window !== 'undefined' ? window.crypto : require('crypto');
+
+function generateSecureNonce() {
+  if (typeof window !== 'undefined' && window.crypto) {
+    const array = new Uint8Array(9);
+    window.crypto.getRandomValues(array);
+    return Array.from(array, b => b.toString(36)).join('').substr(0, 9);
+  } else {
+    return require('crypto').randomBytes(9).toString('hex').substr(0, 9);
+  }
+}
+
 class PIRClient {
   /**
    * Initialize PIR Client
@@ -427,7 +439,7 @@ class PIRClient {
       type,
       parameters,
       timestamp: Date.now(),
-      nonce: Math.random().toString(36).substr(2, 9)
+      nonce: generateSecureNonce()
     };
   }
 
