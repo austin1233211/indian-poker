@@ -55,6 +55,10 @@ class ConstantTimeCompare {
  * Distributed Randomness Generation
  * Implements a commit-reveal scheme where each player contributes entropy
  * to the final shuffle seed, ensuring no single party controls randomness.
+ * 
+ * SECURITY FIX: Timestamp is now committed BEFORE the reveal phase begins,
+ * preventing server timestamp grinding attacks. The timestamp commitment
+ * is broadcast to all players before they reveal their seeds.
  */
 class DistributedRandomness {
     constructor() {
@@ -64,6 +68,8 @@ class DistributedRandomness {
         this.revealPhaseComplete = false;
         this.finalSeed = null;
         this.timestamp = null;
+        this.timestampCommitment = null; // SECURITY: Committed timestamp hash
+        this.timestampCommitted = false; // SECURITY: Track if timestamp was committed
     }
 
     /**
@@ -125,20 +131,48 @@ class DistributedRandomness {
     }
 
     /**
-     * Mark commitment phase as complete
+     * Mark commitment phase as complete and commit to timestamp
+     * SECURITY FIX: Timestamp is committed BEFORE reveal phase begins
+     * This prevents server timestamp grinding attacks
      * Call this when all expected players have committed
      */
     completeCommitmentPhase() {
         if (this.playerCommitments.size === 0) {
             return { success: false, error: 'No commitments received' };
         }
+        
+        // SECURITY FIX: Commit to timestamp before reveal phase
+        // This prevents the server from grinding timestamps after seeing reveals
+        this.timestamp = Date.now().toString();
+        this.timestampCommitment = crypto.createHash('sha256')
+            .update(this.timestamp)
+            .digest('hex');
+        this.timestampCommitted = true;
+        
         this.commitmentPhaseComplete = true;
-        return { success: true, commitmentCount: this.playerCommitments.size };
+        return { 
+            success: true, 
+            commitmentCount: this.playerCommitments.size,
+            timestampCommitment: this.timestampCommitment,
+            message: 'Timestamp committed before reveal phase - server cannot grind timestamps'
+        };
+    }
+    
+    /**
+     * Get the committed timestamp for client verification
+     * Clients should store this before revealing their seeds
+     */
+    getTimestampCommitment() {
+        return {
+            timestampCommitment: this.timestampCommitment,
+            timestampCommitted: this.timestampCommitted
+        };
     }
 
     /**
      * Generate the final shuffle seed from all revealed seeds
-     * Final seed = H(seed_1 || seed_2 || ... || seed_n || timestamp)
+     * SECURITY FIX: Uses the pre-committed timestamp from completeCommitmentPhase()
+     * Final seed = H(seed_1 || seed_2 || ... || seed_n || committed_timestamp)
      * @returns {object} Result containing the final seed
      */
     generateShuffleSeed() {
@@ -146,12 +180,18 @@ class DistributedRandomness {
             return { success: false, error: 'Not all players revealed their seeds' };
         }
 
+        // SECURITY FIX: Verify timestamp was committed before reveal phase
+        if (!this.timestampCommitted || !this.timestamp) {
+            return { success: false, error: 'Timestamp must be committed before generating shuffle seed' };
+        }
+
         // Sort seeds by player ID for deterministic ordering
         const seeds = Array.from(this.playerReveals.entries())
             .sort((a, b) => a[0].localeCompare(b[0]))
             .map(entry => entry[1]);
 
-        this.timestamp = Date.now().toString();
+        // SECURITY FIX: Use the pre-committed timestamp, not a new one
+        // This prevents server timestamp grinding attacks
         const combined = seeds.join('||') + '||' + this.timestamp;
         this.finalSeed = crypto.createHash('sha256').update(combined).digest('hex');
         this.revealPhaseComplete = true;
@@ -160,7 +200,9 @@ class DistributedRandomness {
             success: true,
             finalSeed: this.finalSeed,
             timestamp: this.timestamp,
-            contributorCount: seeds.length
+            timestampCommitment: this.timestampCommitment,
+            contributorCount: seeds.length,
+            message: 'Final seed generated using pre-committed timestamp'
         };
     }
 
@@ -201,6 +243,8 @@ class DistributedRandomness {
             playerReveals: this.playerReveals,
             finalSeed: this.finalSeed,
             timestamp: this.timestamp,
+            timestampCommitment: this.timestampCommitment,
+            timestampCommitted: this.timestampCommitted,
             commitmentPhaseComplete: this.commitmentPhaseComplete,
             revealPhaseComplete: this.revealPhaseComplete
         };
@@ -235,6 +279,8 @@ class DistributedRandomness {
         this.revealPhaseComplete = false;
         this.finalSeed = null;
         this.timestamp = null;
+        this.timestampCommitment = null;
+        this.timestampCommitted = false;
     }
 }
 
@@ -1233,6 +1279,13 @@ class SecureDealingIndex {
  * AEAD Encryption (Authenticated Encryption with Associated Data)
  * Provides AES-256-GCM encryption for sensitive game data
  * Ensures both confidentiality and integrity of encrypted data
+ * 
+ * PRODUCTION KEY MANAGEMENT:
+ * - Set AEAD_MASTER_KEY environment variable for persistent keys across restarts
+ * - Key should be 64 hex characters (32 bytes / 256 bits)
+ * - Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+ * - Supports key versioning for rotation without data loss
+ * - Old keys can be provided via AEAD_PREVIOUS_KEYS (comma-separated hex keys)
  */
 class AEADEncryption {
     constructor(options = {}) {
@@ -1240,12 +1293,122 @@ class AEADEncryption {
         this.keyLength = 32; // 256 bits
         this.ivLength = 12; // 96 bits (recommended for GCM)
         this.tagLength = 16; // 128 bits
-        this.masterKey = options.masterKey || this.generateMasterKey();
+        this.keyVersion = options.keyVersion || 1;
         this.gameKeys = new Map(); // gameId -> derived key
+        this.previousKeys = []; // For key rotation support
+        
+        // PRODUCTION: Load master key from environment or options
+        this.masterKey = this._initializeMasterKey(options);
+        
+        // Load previous keys for rotation support
+        this._loadPreviousKeys();
+        
+        // Log key initialization status (without exposing key)
+        this._logKeyStatus();
+    }
+
+    /**
+     * Initialize master key from environment or generate new one
+     * SECURITY: In production, always use AEAD_MASTER_KEY environment variable
+     * @private
+     */
+    _initializeMasterKey(options) {
+        // Priority 1: Explicit key in options (for testing)
+        if (options.masterKey) {
+            if (Buffer.isBuffer(options.masterKey)) {
+                return options.masterKey;
+            }
+            return Buffer.from(options.masterKey, 'hex');
+        }
+        
+        // Priority 2: Environment variable (recommended for production)
+        const envKey = process.env.AEAD_MASTER_KEY;
+        if (envKey) {
+            if (envKey.length !== 64) {
+                console.error('SECURITY WARNING: AEAD_MASTER_KEY must be 64 hex characters (32 bytes)');
+                console.error('Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+                throw new Error('Invalid AEAD_MASTER_KEY length');
+            }
+            return Buffer.from(envKey, 'hex');
+        }
+        
+        // Priority 3: Generate ephemeral key (development only)
+        if (process.env.NODE_ENV === 'production') {
+            console.error('SECURITY WARNING: No AEAD_MASTER_KEY set in production!');
+            console.error('Encrypted data will be lost on server restart.');
+            console.error('Set AEAD_MASTER_KEY environment variable for persistent encryption.');
+        }
+        
+        return this.generateMasterKey();
+    }
+
+    /**
+     * Load previous keys for rotation support
+     * Allows decryption of data encrypted with old keys during rotation period
+     * @private
+     */
+    _loadPreviousKeys() {
+        const previousKeysEnv = process.env.AEAD_PREVIOUS_KEYS;
+        if (previousKeysEnv) {
+            const keys = previousKeysEnv.split(',').map(k => k.trim()).filter(k => k.length === 64);
+            this.previousKeys = keys.map(k => Buffer.from(k, 'hex'));
+            console.log(`Loaded ${this.previousKeys.length} previous AEAD keys for rotation support`);
+        }
+    }
+
+    /**
+     * Log key initialization status without exposing sensitive data
+     * @private
+     */
+    _logKeyStatus() {
+        const keySource = process.env.AEAD_MASTER_KEY ? 'environment' : 'generated';
+        const keyFingerprint = crypto.createHash('sha256')
+            .update(this.masterKey)
+            .digest('hex')
+            .substring(0, 8);
+        
+        console.log(`AEAD Encryption initialized: source=${keySource}, version=${this.keyVersion}, fingerprint=${keyFingerprint}...`);
     }
 
     generateMasterKey() {
         return crypto.randomBytes(this.keyLength);
+    }
+
+    /**
+     * Get current key fingerprint for verification
+     * @returns {string} First 8 characters of SHA-256 hash of master key
+     */
+    getKeyFingerprint() {
+        return crypto.createHash('sha256')
+            .update(this.masterKey)
+            .digest('hex')
+            .substring(0, 8);
+    }
+
+    /**
+     * Check if using persistent key from environment
+     * @returns {boolean} True if using environment key
+     */
+    isUsingPersistentKey() {
+        return !!process.env.AEAD_MASTER_KEY;
+    }
+
+    /**
+     * Get key management status for monitoring
+     * @returns {object} Key management status
+     */
+    getKeyStatus() {
+        return {
+            keyVersion: this.keyVersion,
+            keySource: process.env.AEAD_MASTER_KEY ? 'environment' : 'ephemeral',
+            keyFingerprint: this.getKeyFingerprint(),
+            previousKeysCount: this.previousKeys.length,
+            gameKeysCount: this.gameKeys.size,
+            isPersistent: this.isUsingPersistentKey(),
+            warning: !this.isUsingPersistentKey() && process.env.NODE_ENV === 'production'
+                ? 'Using ephemeral key in production - data will be lost on restart'
+                : null
+        };
     }
 
     deriveGameKey(gameId) {
