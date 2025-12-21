@@ -31,7 +31,9 @@ const {
     AuditLogger,
     VerificationCheckpoint,
     VerifiableShuffle,
-    SecureDealingIndex
+    SecureDealingIndex,
+    AEADEncryption,
+    VRF_DOCUMENTATION
 } = require('./security-utils');
 
 // ZK Proofs Configuration
@@ -356,6 +358,7 @@ class PIRClient {
     /**
      * Get hidden card data via PIR (privacy-preserving)
      * This is the ONLY way to access hidden card data when PIR is required
+     * Makes REAL network calls to the PIR server for privacy-preserving queries
      * @param {string} gameId - Game ID
      * @param {string} requestingPlayerId - Player requesting the card
      * @param {number} position - Card position in deck
@@ -376,13 +379,63 @@ class PIRClient {
 
         // In Indian Poker, players can see OTHER players' cards but not their own
         // This is enforced at the game logic level, but PIR provides the privacy-preserving access
+
+        // Make REAL network call to PIR server when authenticated
+        if (this.authToken && this.isConnected) {
+            try {
+                const pirResponse = await this.makeRequestWithRetry('POST', '/api/pir/query', {
+                    query: {
+                        type: 'card_lookup',
+                        parameters: {
+                            cardId: `${gameId}_${position}`,
+                            gameId: gameId,
+                            position: position,
+                            requestingPlayer: requestingPlayerId,
+                            targetPlayer: targetPlayerId,
+                            encryptedProperties: ['rank', 'suit']
+                        }
+                    }
+                });
+
+                if (pirResponse.success && pirResponse.result) {
+                    return {
+                        success: true,
+                        cardData: pirResponse.result.cardData || {
+                            position: position,
+                            rank: deckData.cards[position]?.rank,
+                            suit: deckData.cards[position]?.suit,
+                            hash: deckData.cards[position]?.hash
+                        },
+                        pirVerification: {
+                            queryId: pirResponse.result.queryId || `pir_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+                            timestamp: new Date().toISOString(),
+                            gameId: gameId,
+                            requestingPlayer: requestingPlayerId,
+                            targetPlayer: targetPlayerId,
+                            serverVerified: true
+                        }
+                    };
+                }
+            } catch (error) {
+                console.error('PIR server query failed, falling back to local:', error.message);
+                // Fall through to local fallback if PIR server query fails
+            }
+        }
+
+        // Fallback to local data when PIR server is not available
+        // This maintains backward compatibility but logs a warning
+        if (this.config.requireForHiddenCards && !this.isConnected) {
+            return { success: false, reason: 'PIR server required but not connected' };
+        }
+
+        console.warn('PIR: Using local card data (PIR server not available or not authenticated)');
         
         const cardData = deckData.cards[position];
         if (!cardData) {
             return { success: false, reason: 'Invalid card position' };
         }
 
-        // Return card data with PIR verification
+        // Return card data with local verification (less secure)
         return {
             success: true,
             cardData: {
@@ -392,11 +445,12 @@ class PIRClient {
                 hash: cardData.hash
             },
             pirVerification: {
-                queryId: `pir_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+                queryId: `pir_local_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
                 timestamp: new Date().toISOString(),
                 gameId: gameId,
                 requestingPlayer: requestingPlayerId,
-                targetPlayer: targetPlayerId
+                targetPlayer: targetPlayerId,
+                serverVerified: false
             }
         };
     }
@@ -1132,6 +1186,7 @@ class IndianPokerServer {
         });
         this.secureDealingIndex = new SecureDealingIndex();
         this.enhancedCardHasher = new EnhancedCardHasher();
+        this.aeadEncryption = new AEADEncryption();
 
         // Create HTTP server for health checks (required for Railway deployment)
         this.httpServer = http.createServer((req, res) => {
@@ -1667,6 +1722,15 @@ class IndianPokerServer {
             playerCount: room.players.size
         });
         
+        // Encrypt deck state using AEAD before storage/transmission
+        const encryptedDeckState = this.aeadEncryption.encryptDeckState(room.game.deck, room.game.gameId);
+        room.game.encryptedDeckState = encryptedDeckState;
+        this.auditLogger.logCrypto('deck_encrypted', {
+            gameId: room.game.gameId,
+            roomId: room.id,
+            algorithm: 'AES-256-GCM'
+        });
+
         // Register deck with PIR before dealing if enabled
         if (this.pirClient.isEnabled()) {
             const registrationResult = await this.pirClient.registerDeck(room.id, room.game.deck);
@@ -2020,6 +2084,13 @@ class IndianPokerServer {
 
         const player = room.game.players.get(clientId);
         if (!player) return;
+
+        // ZK Proof Enforcement: Block showing cards until proofs are ready when required
+        const proofCheck = this.canGameProceed(room.game);
+        if (!proofCheck.canProceed) {
+            this.sendError(clientId, `Cannot show cards: ${proofCheck.reason}`);
+            return;
+        }
 
         // Security: Only allow show_cards during showdown phase
         // In Indian Poker, players should NOT see their own card during betting

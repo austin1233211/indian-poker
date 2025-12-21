@@ -1229,6 +1229,177 @@ class SecureDealingIndex {
     }
 }
 
+/**
+ * AEAD Encryption (Authenticated Encryption with Associated Data)
+ * Provides AES-256-GCM encryption for sensitive game data
+ * Ensures both confidentiality and integrity of encrypted data
+ */
+class AEADEncryption {
+    constructor(options = {}) {
+        this.algorithm = 'aes-256-gcm';
+        this.keyLength = 32; // 256 bits
+        this.ivLength = 12; // 96 bits (recommended for GCM)
+        this.tagLength = 16; // 128 bits
+        this.masterKey = options.masterKey || this.generateMasterKey();
+        this.gameKeys = new Map(); // gameId -> derived key
+    }
+
+    generateMasterKey() {
+        return crypto.randomBytes(this.keyLength);
+    }
+
+    deriveGameKey(gameId) {
+        if (this.gameKeys.has(gameId)) {
+            return this.gameKeys.get(gameId);
+        }
+        const derivedKey = crypto.createHmac('sha256', this.masterKey)
+            .update(`game_key_${gameId}`)
+            .digest();
+        this.gameKeys.set(gameId, derivedKey);
+        return derivedKey;
+    }
+
+    encrypt(plaintext, gameId, associatedData = '') {
+        const key = this.deriveGameKey(gameId);
+        const iv = crypto.randomBytes(this.ivLength);
+        const cipher = crypto.createCipheriv(this.algorithm, key, iv, {
+            authTagLength: this.tagLength
+        });
+
+        if (associatedData) {
+            cipher.setAAD(Buffer.from(associatedData, 'utf8'));
+        }
+
+        const plaintextBuffer = Buffer.from(JSON.stringify(plaintext), 'utf8');
+        const encrypted = Buffer.concat([cipher.update(plaintextBuffer), cipher.final()]);
+        const authTag = cipher.getAuthTag();
+
+        return {
+            ciphertext: encrypted.toString('base64'),
+            iv: iv.toString('base64'),
+            authTag: authTag.toString('base64'),
+            aad: associatedData ? Buffer.from(associatedData).toString('base64') : null
+        };
+    }
+
+    decrypt(encryptedData, gameId, associatedData = '') {
+        try {
+            const key = this.deriveGameKey(gameId);
+            const iv = Buffer.from(encryptedData.iv, 'base64');
+            const authTag = Buffer.from(encryptedData.authTag, 'base64');
+            const ciphertext = Buffer.from(encryptedData.ciphertext, 'base64');
+
+            const decipher = crypto.createDecipheriv(this.algorithm, key, iv, {
+                authTagLength: this.tagLength
+            });
+
+            decipher.setAuthTag(authTag);
+
+            if (associatedData) {
+                decipher.setAAD(Buffer.from(associatedData, 'utf8'));
+            }
+
+            const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+            return JSON.parse(decrypted.toString('utf8'));
+        } catch (error) {
+            console.error('AEAD decryption failed:', error.message);
+            return null;
+        }
+    }
+
+    encryptCardData(card, gameId, playerId) {
+        const associatedData = `card_${gameId}_${playerId}`;
+        return this.encrypt({
+            rank: card.rank,
+            suit: card.suit,
+            position: card.position
+        }, gameId, associatedData);
+    }
+
+    decryptCardData(encryptedCard, gameId, playerId) {
+        const associatedData = `card_${gameId}_${playerId}`;
+        return this.decrypt(encryptedCard, gameId, associatedData);
+    }
+
+    encryptDeckState(deck, gameId) {
+        const associatedData = `deck_state_${gameId}`;
+        return this.encrypt({
+            cards: deck.cards.map((card, index) => ({
+                rank: card.rank,
+                suit: card.suit,
+                position: index
+            })),
+            timestamp: new Date().toISOString()
+        }, gameId, associatedData);
+    }
+
+    decryptDeckState(encryptedDeck, gameId) {
+        const associatedData = `deck_state_${gameId}`;
+        return this.decrypt(encryptedDeck, gameId, associatedData);
+    }
+
+    encryptGameState(gameState, gameId) {
+        const associatedData = `game_state_${gameId}`;
+        return this.encrypt(gameState, gameId, associatedData);
+    }
+
+    decryptGameState(encryptedState, gameId) {
+        const associatedData = `game_state_${gameId}`;
+        return this.decrypt(encryptedState, gameId, associatedData);
+    }
+
+    cleanupGame(gameId) {
+        this.gameKeys.delete(gameId);
+    }
+
+    rotateKey(gameId) {
+        this.gameKeys.delete(gameId);
+        return this.deriveGameKey(gameId);
+    }
+}
+
+/**
+ * VRF Documentation
+ * 
+ * RANDOMNESS APPROACH: Commit-Reveal Scheme
+ * 
+ * This implementation uses a commit-reveal scheme for distributed randomness
+ * rather than a Verifiable Random Function (VRF) with elliptic curves.
+ * 
+ * RATIONALE:
+ * 1. Commit-reveal provides provable fairness without external dependencies
+ * 2. Each player contributes entropy, preventing any single party from controlling randomness
+ * 3. The scheme is simpler to implement and audit than full VRF
+ * 4. No trusted setup or elliptic curve operations required
+ * 
+ * HOW IT WORKS:
+ * 1. COMMIT PHASE: Each player generates a random seed and commits H(seed)
+ * 2. REVEAL PHASE: After all commitments, players reveal their seeds
+ * 3. VERIFICATION: Server verifies H(revealed_seed) == commitment
+ * 4. COMBINATION: Final seed = XOR of all revealed seeds
+ * 5. SHUFFLE: Deterministic shuffle using final seed
+ * 
+ * SECURITY PROPERTIES:
+ * - Unpredictability: No player can predict the final seed before all reveals
+ * - Unbiasability: No player can influence the outcome (except by aborting)
+ * - Verifiability: Anyone can verify the shuffle was fair given the transcript
+ * 
+ * TRADE-OFFS vs VRF:
+ * - VRF would provide non-interactive randomness (single message)
+ * - VRF requires elliptic curve cryptography and key management
+ * - Commit-reveal requires two rounds but is simpler and equally secure
+ * 
+ * If VRF is required in the future, consider using:
+ * - libsodium's crypto_vrf_* functions
+ * - ECVRF (Elliptic Curve VRF) per RFC 9381
+ */
+const VRF_DOCUMENTATION = {
+    approach: 'commit-reveal',
+    rationale: 'Simpler implementation with equivalent security properties for this use case',
+    securityProperties: ['unpredictability', 'unbiasability', 'verifiability'],
+    futureConsiderations: ['ECVRF per RFC 9381', 'libsodium crypto_vrf_*']
+};
+
 module.exports = {
     ConstantTimeCompare,
     DistributedRandomness,
@@ -1241,5 +1412,7 @@ module.exports = {
     AuditLogger,
     VerificationCheckpoint,
     VerifiableShuffle,
-    SecureDealingIndex
+    SecureDealingIndex,
+    AEADEncryption,
+    VRF_DOCUMENTATION
 };
