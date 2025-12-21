@@ -31,7 +31,9 @@ const {
     AuditLogger,
     VerificationCheckpoint,
     VerifiableShuffle,
-    SecureDealingIndex
+    SecureDealingIndex,
+    AEADEncryption,
+    VRF_DOCUMENTATION
 } = require('./security-utils');
 
 // ZK Proofs Configuration
@@ -1184,6 +1186,7 @@ class IndianPokerServer {
         });
         this.secureDealingIndex = new SecureDealingIndex();
         this.enhancedCardHasher = new EnhancedCardHasher();
+        this.aeadEncryption = new AEADEncryption();
 
         // Create HTTP server for health checks (required for Railway deployment)
         this.httpServer = http.createServer((req, res) => {
@@ -1719,6 +1722,15 @@ class IndianPokerServer {
             playerCount: room.players.size
         });
         
+        // Encrypt deck state using AEAD before storage/transmission
+        const encryptedDeckState = this.aeadEncryption.encryptDeckState(room.game.deck, room.game.gameId);
+        room.game.encryptedDeckState = encryptedDeckState;
+        this.auditLogger.logCrypto('deck_encrypted', {
+            gameId: room.game.gameId,
+            roomId: room.id,
+            algorithm: 'AES-256-GCM'
+        });
+
         // Register deck with PIR before dealing if enabled
         if (this.pirClient.isEnabled()) {
             const registrationResult = await this.pirClient.registerDeck(room.id, room.game.deck);
@@ -2072,6 +2084,13 @@ class IndianPokerServer {
 
         const player = room.game.players.get(clientId);
         if (!player) return;
+
+        // ZK Proof Enforcement: Block showing cards until proofs are ready when required
+        const proofCheck = this.canGameProceed(room.game);
+        if (!proofCheck.canProceed) {
+            this.sendError(clientId, `Cannot show cards: ${proofCheck.reason}`);
+            return;
+        }
 
         // Security: Only allow show_cards during showdown phase
         // In Indian Poker, players should NOT see their own card during betting
