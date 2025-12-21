@@ -725,37 +725,73 @@ class TeenPattiGame {
         };
     }
 
+    /**
+     * Handle randomness collection timeout
+     * SECURITY FIX: Instead of falling back to server randomness (which undermines
+     * provable fairness), we now ABORT the game when players don't participate.
+     * This prevents malicious players from intentionally triggering server-controlled
+     * randomness and ensures the "provably fair" guarantee is maintained.
+     */
     handleRandomnessTimeout() {
         const state = this.distributedRandomness.getState();
         
+        // SECURITY FIX: Abort game if no commitments received
+        // Previously: Used server randomness (security vulnerability)
+        // Now: Abort game to maintain provable fairness guarantee
         if (state.commitmentCount === 0) {
-            this.randomnessState = 'fallback';
+            this.randomnessState = 'aborted_no_commitments';
             this.useDistributedRandomness = false;
-            return { action: 'fallback', reason: 'No commitments received, using server randomness' };
+            this.gameAborted = true;
+            this.abortReason = 'No players committed randomness seeds within timeout period';
+            return { 
+                action: 'abort', 
+                reason: 'Game aborted: No commitments received. All players must participate in randomness generation for provable fairness.',
+                securityNote: 'Server randomness fallback disabled to maintain cryptographic fairness guarantees'
+            };
         }
 
         if (!state.commitmentPhaseComplete) {
             this.distributedRandomness.completeCommitmentPhase();
         }
 
+        // SECURITY FIX: Abort game if not all players revealed
+        // Previously: Used server randomness (security vulnerability - malicious player could force this)
+        // Now: Abort game to prevent manipulation
         if (state.revealCount < state.commitmentCount) {
-            this.randomnessState = 'timeout_partial';
+            this.randomnessState = 'aborted_incomplete_reveals';
             this.useDistributedRandomness = false;
+            this.gameAborted = true;
+            this.abortReason = `Only ${state.revealCount} of ${state.commitmentCount} players revealed their seeds`;
             return { 
-                action: 'fallback', 
-                reason: 'Not all players revealed, using server randomness',
+                action: 'abort', 
+                reason: `Game aborted: Not all players revealed their seeds (${state.revealCount}/${state.commitmentCount}). This prevents manipulation of randomness.`,
                 committed: state.commitmentCount,
-                revealed: state.revealCount
+                revealed: state.revealCount,
+                securityNote: 'Server randomness fallback disabled to maintain cryptographic fairness guarantees'
             };
         }
 
         return { action: 'complete', reason: 'All reveals received' };
     }
 
+    /**
+     * Finalize randomness generation
+     * SECURITY FIX: No longer falls back to server randomness.
+     * If distributed randomness fails, the game is aborted to maintain provable fairness.
+     */
     finalizeRandomness() {
         if (this.randomnessTimeout) {
             clearTimeout(this.randomnessTimeout);
             this.randomnessTimeout = null;
+        }
+
+        // Check if game was already aborted due to randomness issues
+        if (this.gameAborted) {
+            return {
+                success: false,
+                aborted: true,
+                reason: this.abortReason || 'Game aborted due to randomness protocol failure'
+            };
         }
 
         const state = this.distributedRandomness.getState();
@@ -770,15 +806,22 @@ class TeenPattiGame {
             return {
                 success: true,
                 finalSeed: this.distributedRandomness.finalSeed,
-                contributorCount: state.commitmentCount
+                contributorCount: state.commitmentCount,
+                timestampCommitment: this.distributedRandomness.timestampCommitment
             };
         }
 
-        this.randomnessState = 'fallback';
-        this.useDistributedRandomness = false;
+        // SECURITY FIX: Abort game instead of using server randomness
+        // Previously: Used server randomness (security vulnerability)
+        // Now: Abort game to maintain provable fairness guarantee
+        this.randomnessState = 'aborted_seed_generation_failed';
+        this.gameAborted = true;
+        this.abortReason = 'Could not generate final seed from player contributions';
         return {
             success: false,
-            reason: 'Could not generate final seed, using server randomness'
+            aborted: true,
+            reason: 'Game aborted: Could not generate final seed. Server randomness fallback disabled for security.',
+            securityNote: 'Server randomness fallback disabled to maintain cryptographic fairness guarantees'
         };
     }
 
