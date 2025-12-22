@@ -296,6 +296,9 @@ class CryptoRateLimiter {
         this.windowMs = options.windowMs || 3600000; // 1 hour default
         this.deckCommitments = new Map(); // clientId -> { count, resetTime }
         this.maxCommitmentsPerHour = options.maxCommitmentsPerHour || 20;
+        this.hiddenCardRequests = new Map(); // clientId -> { count, resetTime }
+        this.maxHiddenCardPerMinute = options.maxHiddenCardPerMinute || 10;
+        this.hiddenCardWindowMs = options.hiddenCardWindowMs || 60000; // 1 minute for hidden card requests
     }
 
     /**
@@ -306,23 +309,31 @@ class CryptoRateLimiter {
      */
     checkLimit(clientId, operation = 'proofGeneration') {
         const now = Date.now();
-        let limitMap, maxLimit;
+        let limitMap, maxLimit, windowMs;
 
         switch (operation) {
             case 'proofGeneration':
                 limitMap = this.proofGeneration;
                 maxLimit = this.maxProofsPerHour;
+                windowMs = this.windowMs;
                 break;
             case 'deckCommitment':
                 limitMap = this.deckCommitments;
                 maxLimit = this.maxCommitmentsPerHour;
+                windowMs = this.windowMs;
+                break;
+            case 'hidden_card':
+                limitMap = this.hiddenCardRequests;
+                maxLimit = this.maxHiddenCardPerMinute;
+                windowMs = this.hiddenCardWindowMs;
                 break;
             default:
                 limitMap = this.proofGeneration;
                 maxLimit = this.maxProofsPerHour;
+                windowMs = this.windowMs;
         }
 
-        const record = limitMap.get(clientId) || { count: 0, resetTime: now + this.windowMs };
+        const record = limitMap.get(clientId) || { count: 0, resetTime: now + windowMs };
 
         // Reset if window has passed
         if (now > record.resetTime) {
@@ -350,25 +361,32 @@ class CryptoRateLimiter {
      */
     recordOperation(clientId, operation = 'proofGeneration') {
         const now = Date.now();
-        let limitMap;
+        let limitMap, windowMs;
 
         switch (operation) {
             case 'proofGeneration':
                 limitMap = this.proofGeneration;
+                windowMs = this.windowMs;
                 break;
             case 'deckCommitment':
                 limitMap = this.deckCommitments;
+                windowMs = this.windowMs;
+                break;
+            case 'hidden_card':
+                limitMap = this.hiddenCardRequests;
+                windowMs = this.hiddenCardWindowMs;
                 break;
             default:
                 limitMap = this.proofGeneration;
+                windowMs = this.windowMs;
         }
 
-        const record = limitMap.get(clientId) || { count: 0, resetTime: now + this.windowMs };
+        const record = limitMap.get(clientId) || { count: 0, resetTime: now + windowMs };
 
         // Reset if window has passed
         if (now > record.resetTime) {
             record.count = 0;
-            record.resetTime = now + this.windowMs;
+            record.resetTime = now + windowMs;
         }
 
         record.count++;
@@ -1685,6 +1703,100 @@ class MessageEncryption {
      */
     cleanupClient(clientId) {
         this.sequenceNumbers.delete(clientId);
+    }
+
+    /**
+     * Derive a unique encryption key for a specific game and client combination
+     * This ensures each client gets a unique key per game, preventing cross-game key reuse
+     * @param {string} gameId - Game identifier
+     * @param {string} clientId - Client identifier
+     * @returns {Buffer} Derived key unique to this game-client pair
+     */
+    deriveGameClientKey(gameId, clientId) {
+        return crypto.createHmac('sha256', this.gameSecret)
+            .update(`game_client_key_${gameId}_${clientId}`)
+            .digest();
+    }
+
+    /**
+     * Encrypt personalized game state for a specific client in a specific game
+     * Uses a unique key derived from gameId + clientId to ensure clients cannot
+     * decrypt messages intended for other clients
+     * @param {string} gameId - Game identifier
+     * @param {string} clientId - Client identifier
+     * @param {object} gameState - Personalized game state to encrypt
+     * @returns {object} Encrypted game state with metadata
+     */
+    encryptPersonalizedGameState(gameId, clientId, gameState) {
+        const key = this.deriveGameClientKey(gameId, clientId);
+        const iv = crypto.randomBytes(this.ivLength);
+        const sequence = this.getNextSequence(`${gameId}_${clientId}`);
+        const timestamp = Date.now();
+
+        const payload = JSON.stringify({
+            gameState: gameState,
+            sequence: sequence,
+            timestamp: timestamp
+        });
+
+        const cipher = crypto.createCipheriv(this.algorithm, key, iv, {
+            authTagLength: this.tagLength
+        });
+
+        const encrypted = Buffer.concat([
+            cipher.update(payload, 'utf8'),
+            cipher.final()
+        ]);
+        const authTag = cipher.getAuthTag();
+
+        return {
+            encrypted: true,
+            gameId: gameId,
+            ciphertext: encrypted.toString('base64'),
+            iv: iv.toString('base64'),
+            authTag: authTag.toString('base64'),
+            sequence: sequence,
+            timestamp: timestamp
+        };
+    }
+
+    /**
+     * Decrypt personalized game state for a specific client in a specific game
+     * @param {string} gameId - Game identifier
+     * @param {string} clientId - Client identifier
+     * @param {object} encryptedData - Encrypted game state data
+     * @returns {object|null} Decrypted game state or null if failed
+     */
+    decryptPersonalizedGameState(gameId, clientId, encryptedData) {
+        try {
+            const key = this.deriveGameClientKey(gameId, clientId);
+            const iv = Buffer.from(encryptedData.iv, 'base64');
+            const authTag = Buffer.from(encryptedData.authTag, 'base64');
+            const ciphertext = Buffer.from(encryptedData.ciphertext, 'base64');
+
+            const decipher = crypto.createDecipheriv(this.algorithm, key, iv, {
+                authTagLength: this.tagLength
+            });
+            decipher.setAuthTag(authTag);
+
+            const decrypted = Buffer.concat([
+                decipher.update(ciphertext),
+                decipher.final()
+            ]);
+
+            const payload = JSON.parse(decrypted.toString('utf8'));
+
+            const maxAge = 5 * 60 * 1000;
+            if (Date.now() - payload.timestamp > maxAge) {
+                console.warn(`Stale game state detected for client ${clientId} in game ${gameId}`);
+                return null;
+            }
+
+            return payload.gameState;
+        } catch (error) {
+            console.error('Game state decryption failed:', error.message);
+            return null;
+        }
     }
 }
 

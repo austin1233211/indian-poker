@@ -2567,6 +2567,7 @@ class IndianPokerServer {
      * PIR Integration: Handle request for hidden card data via PIR
      * This is the privacy-preserving way to access other players' cards
      * In Indian Poker, players can see OTHER players' cards but not their own
+     * SECURITY: Rate limited to prevent abuse and information leakage
      */
     async handleGetHiddenCard(clientId, data) {
         const client = this.clients.get(clientId);
@@ -2574,6 +2575,21 @@ class IndianPokerServer {
             this.sendError(clientId, 'Not in a room');
             return;
         }
+
+        const rateLimit = this.rateLimiter.checkLimit(clientId, 'hidden_card');
+        if (!rateLimit.allowed) {
+            this.sendError(clientId, 'Too many card requests');
+            this.auditLogger.logSecurity('HIDDEN_CARD_RATE_LIMIT', {
+                clientId,
+                attempts: rateLimit.attempts
+            });
+            this.anomalyDetector.recordAction(clientId, 'rate_limit_exceeded', { 
+                operation: 'hidden_card',
+                timestamp: Date.now() 
+            });
+            return;
+        }
+        this.rateLimiter.recordOperation(clientId, 'hidden_card');
 
         const { targetPlayerId, position } = data || {};
         
@@ -2946,21 +2962,44 @@ class IndianPokerServer {
     /**
      * Broadcast personalized game state to all players in a room
      * Each player sees OTHER players' cards but NOT their own (Indian Poker mechanic)
+     * SECURITY: Game state is encrypted with a unique key derived from gameId + clientId
+     * so clients cannot decrypt messages intended for other clients
      */
     broadcastPersonalizedGameState(room, messageType, additionalData = {}) {
         if (!room.game || typeof room.game.getGameStateForClient !== 'function') {
             return;
         }
         
+        const gameId = room.game.gameId || room.id;
+        
         for (const [clientId, client] of this.clients) {
             if (client.roomId === room.id) {
-                this.sendMessage(clientId, {
-                    type: messageType,
-                    data: {
-                        ...additionalData,
-                        gameState: room.game.getGameStateForClient(clientId)
-                    }
-                });
+                const personalizedState = room.game.getGameStateForClient(clientId);
+                const securityEnabled = this.clientSecurityEnabled.get(clientId);
+                
+                if (securityEnabled && securityEnabled.encryptionEnabled) {
+                    const encryptedGameState = this.messageEncryption.encryptPersonalizedGameState(
+                        gameId,
+                        clientId,
+                        personalizedState
+                    );
+                    
+                    this.sendMessage(clientId, {
+                        type: messageType,
+                        data: {
+                            ...additionalData,
+                            encryptedGameState: encryptedGameState
+                        }
+                    });
+                } else {
+                    this.sendMessage(clientId, {
+                        type: messageType,
+                        data: {
+                            ...additionalData,
+                            gameState: personalizedState
+                        }
+                    });
+                }
             }
         }
     }
