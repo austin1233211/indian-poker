@@ -33,6 +33,10 @@ const {
     VerifiableShuffle,
     SecureDealingIndex,
     AEADEncryption,
+    MessageEncryption,
+    MessageAuthenticator,
+    AnomalyDetector,
+    TimeLockRandomness,
     VRF_DOCUMENTATION
 } = require('./security-utils');
 
@@ -1230,6 +1234,15 @@ class IndianPokerServer {
         this.secureDealingIndex = new SecureDealingIndex();
         this.enhancedCardHasher = new EnhancedCardHasher();
         this.aeadEncryption = new AEADEncryption();
+        
+        this.messageEncryption = new MessageEncryption();
+        this.messageAuthenticator = new MessageAuthenticator();
+        this.anomalyDetector = new AnomalyDetector({
+            maxHistorySize: 100,
+            minCommitTime: 100,
+            maxActionsPerMinute: 60
+        });
+        this.clientSecurityEnabled = new Map();
 
         // Create HTTP server for health checks (required for Railway deployment)
         this.httpServer = http.createServer((req, res) => {
@@ -1455,10 +1468,33 @@ class IndianPokerServer {
         const client = this.clients.get(clientId);
         if (!client) return;
 
-        const { type, data: messageData } = data;
+        let { type, data: messageData } = data;
+
+        if (type === 'encrypted_message' && messageData) {
+            const decrypted = this.decryptClientMessage(clientId, messageData.encrypted, messageData.signature);
+            if (!decrypted) {
+                this.sendError(clientId, 'Failed to decrypt message');
+                return;
+            }
+            type = decrypted.type;
+            messageData = decrypted.data;
+        }
+
+        this.anomalyDetector.recordAction(clientId, type, { timestamp: Date.now() });
+        const anomalies = this.anomalyDetector.detectAnomalies(clientId, type, { timestamp: Date.now() });
+        if (anomalies.length > 0) {
+            this.auditLogger.logSecurity('anomaly_detected', { clientId, type, anomalies });
+        }
 
         try {
             switch (type) {
+                case 'security_init':
+                    const securityResponse = this.handleSecurityInit(clientId);
+                    const clientObj = this.clients.get(clientId);
+                    if (clientObj && clientObj.ws.readyState === WebSocket.OPEN) {
+                        clientObj.ws.send(JSON.stringify(securityResponse));
+                    }
+                    break;
                 case 'create_room':
                     this.handleCreateRoom(clientId, messageData);
                     break;
@@ -2531,6 +2567,7 @@ class IndianPokerServer {
      * PIR Integration: Handle request for hidden card data via PIR
      * This is the privacy-preserving way to access other players' cards
      * In Indian Poker, players can see OTHER players' cards but not their own
+     * SECURITY: Rate limited to prevent abuse and information leakage
      */
     async handleGetHiddenCard(clientId, data) {
         const client = this.clients.get(clientId);
@@ -2538,6 +2575,21 @@ class IndianPokerServer {
             this.sendError(clientId, 'Not in a room');
             return;
         }
+
+        const rateLimit = this.rateLimiter.checkLimit(clientId, 'hidden_card');
+        if (!rateLimit.allowed) {
+            this.sendError(clientId, 'Too many card requests');
+            this.auditLogger.logSecurity('HIDDEN_CARD_RATE_LIMIT', {
+                clientId,
+                attempts: rateLimit.attempts
+            });
+            this.anomalyDetector.recordAction(clientId, 'rate_limit_exceeded', { 
+                operation: 'hidden_card',
+                timestamp: Date.now() 
+            });
+            return;
+        }
+        this.rateLimiter.recordOperation(clientId, 'hidden_card');
 
         const { targetPlayerId, position } = data || {};
         
@@ -2910,29 +2962,69 @@ class IndianPokerServer {
     /**
      * Broadcast personalized game state to all players in a room
      * Each player sees OTHER players' cards but NOT their own (Indian Poker mechanic)
+     * SECURITY: Game state is encrypted with a unique key derived from gameId + clientId
+     * so clients cannot decrypt messages intended for other clients
      */
     broadcastPersonalizedGameState(room, messageType, additionalData = {}) {
         if (!room.game || typeof room.game.getGameStateForClient !== 'function') {
             return;
         }
         
+        const gameId = room.game.gameId || room.id;
+        
         for (const [clientId, client] of this.clients) {
             if (client.roomId === room.id) {
-                this.sendMessage(clientId, {
-                    type: messageType,
-                    data: {
-                        ...additionalData,
-                        gameState: room.game.getGameStateForClient(clientId)
-                    }
-                });
+                const personalizedState = room.game.getGameStateForClient(clientId);
+                const securityEnabled = this.clientSecurityEnabled.get(clientId);
+                
+                if (securityEnabled && securityEnabled.encryptionEnabled) {
+                    const encryptedGameState = this.messageEncryption.encryptPersonalizedGameState(
+                        gameId,
+                        clientId,
+                        personalizedState
+                    );
+                    
+                    this.sendMessage(clientId, {
+                        type: messageType,
+                        data: {
+                            ...additionalData,
+                            encryptedGameState: encryptedGameState
+                        }
+                    });
+                } else {
+                    this.sendMessage(clientId, {
+                        type: messageType,
+                        data: {
+                            ...additionalData,
+                            gameState: personalizedState
+                        }
+                    });
+                }
             }
         }
     }
 
-    sendMessage(clientId, message) {
+    sendMessage(clientId, message, forceEncrypt = false) {
         const client = this.clients.get(clientId);
         if (client && client.ws.readyState === WebSocket.OPEN) {
-            client.ws.send(JSON.stringify(message));
+            const securityEnabled = this.clientSecurityEnabled.get(clientId);
+            if (securityEnabled && (forceEncrypt || securityEnabled.encryptionEnabled)) {
+                try {
+                    const encrypted = this.messageEncryption.encryptMessage(clientId, message);
+                    const signature = this.messageAuthenticator.signMessage(clientId, encrypted);
+                    client.ws.send(JSON.stringify({
+                        type: 'encrypted_message',
+                        data: {
+                            encrypted: encrypted,
+                            signature: signature
+                        }
+                    }));
+                } catch (err) {
+                    client.ws.send(JSON.stringify(message));
+                }
+            } else {
+                client.ws.send(JSON.stringify(message));
+            }
         }
     }
 
@@ -2941,6 +3033,44 @@ class IndianPokerServer {
             type: 'error',
             data: { message: errorMessage }
         });
+    }
+
+    handleSecurityInit(clientId) {
+        const encryptionKey = this.messageEncryption.deriveClientKey(clientId).toString('hex');
+        const authKey = this.messageAuthenticator.generateClientKey(clientId);
+        this.clientSecurityEnabled.set(clientId, {
+            encryptionEnabled: true,
+            initialized: Date.now()
+        });
+        this.auditLogger.logSecurity('security_init', { clientId });
+        return {
+            type: 'security_keys',
+            data: {
+                encryptionKey: encryptionKey,
+                authKey: authKey,
+                algorithm: 'AES-256-GCM',
+                hmacAlgorithm: 'SHA-256'
+            }
+        };
+    }
+
+    decryptClientMessage(clientId, encryptedData, signature) {
+        const securityEnabled = this.clientSecurityEnabled.get(clientId);
+        if (!securityEnabled || !securityEnabled.encryptionEnabled) {
+            return null;
+        }
+        if (!this.messageAuthenticator.verifyMessage(clientId, encryptedData, signature)) {
+            this.auditLogger.logSecurity('hmac_verification_failed', { clientId });
+            this.anomalyDetector.recordAction(clientId, 'hmac_failure', { timestamp: Date.now() });
+            return null;
+        }
+        try {
+            const decrypted = this.messageEncryption.decryptMessage(clientId, encryptedData);
+            return decrypted;
+        } catch (err) {
+            this.auditLogger.logSecurity('decryption_failed', { clientId, error: err.message });
+            return null;
+        }
     }
 }
 
