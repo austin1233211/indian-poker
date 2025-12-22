@@ -1253,6 +1253,7 @@ class IndianPokerServer {
                     service: 'indian-poker-server',
                     security: {
                         wssEnforced: this.wssEnforcer.enforceWSS,
+                        encryptionMandatory: true,
                         rateLimitingEnabled: true,
                         proofValidationEnabled: true,
                         continuousMonitoringEnabled: true,
@@ -1478,6 +1479,19 @@ class IndianPokerServer {
             }
             type = decrypted.type;
             messageData = decrypted.data;
+        }
+
+        const securityEnabled = this.clientSecurityEnabled.get(clientId);
+        if (type !== 'security_init' && (!securityEnabled || !securityEnabled.encryptionEnabled)) {
+            this.sendMessage(clientId, {
+                type: 'security_required',
+                data: {
+                    message: 'Security initialization required. Please send security_init first.',
+                    code: 'ENCRYPTION_REQUIRED'
+                }
+            });
+            this.auditLogger.logSecurity('unencrypted_message_rejected', { clientId, type });
+            return;
         }
 
         this.anomalyDetector.recordAction(clientId, type, { timestamp: Date.now() });
