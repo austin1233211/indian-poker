@@ -336,6 +336,13 @@
                     case 'error':
                         this.log('ERROR: ' + message.data.message);
                         break;
+
+                    case 'security_required':
+                        this.log('SECURITY: ' + message.data.message);
+                        if (!this.securityEnabled) {
+                            this.initSecurity();
+                        }
+                        break;
                         
                     default:
                         this.log('Unknown message: ' + JSON.stringify(message));
