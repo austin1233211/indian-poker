@@ -114,8 +114,91 @@
     </div>
 
     <script>
-        // WebSocket server URL - change this to your deployed server URL
         const WS_URL = 'wss://indian-poker-production.up.railway.app';
+
+        class SecureMessageHandler {
+            constructor() {
+                this.encryptionKey = null;
+                this.authKey = null;
+                this.sequence = 0;
+            }
+
+            async initKeys(encryptionKeyHex, authKeyHex) {
+                const encKeyBytes = this.hexToBytes(encryptionKeyHex);
+                const authKeyBytes = this.hexToBytes(authKeyHex);
+                this.encryptionKey = await window.crypto.subtle.importKey(
+                    'raw', encKeyBytes, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']
+                );
+                this.authKey = await window.crypto.subtle.importKey(
+                    'raw', authKeyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']
+                );
+            }
+
+            hexToBytes(hex) {
+                const bytes = new Uint8Array(hex.length / 2);
+                for (let i = 0; i < hex.length; i += 2) {
+                    bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+                }
+                return bytes;
+            }
+
+            bytesToHex(bytes) {
+                return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+            }
+
+            async encrypt(message) {
+                if (!this.encryptionKey) return null;
+                const iv = window.crypto.getRandomValues(new Uint8Array(12));
+                const payload = JSON.stringify({
+                    ...message,
+                    seq: ++this.sequence,
+                    ts: Date.now()
+                });
+                const encoded = new TextEncoder().encode(payload);
+                const ciphertext = await window.crypto.subtle.encrypt(
+                    { name: 'AES-GCM', iv: iv }, this.encryptionKey, encoded
+                );
+                return {
+                    iv: this.bytesToHex(iv),
+                    ciphertext: this.bytesToHex(new Uint8Array(ciphertext)),
+                    sequence: this.sequence,
+                    timestamp: Date.now()
+                };
+            }
+
+            async decrypt(encryptedData) {
+                if (!this.encryptionKey) return null;
+                try {
+                    const iv = this.hexToBytes(encryptedData.iv);
+                    const ciphertext = this.hexToBytes(encryptedData.ciphertext);
+                    const decrypted = await window.crypto.subtle.decrypt(
+                        { name: 'AES-GCM', iv: iv }, this.encryptionKey, ciphertext
+                    );
+                    return JSON.parse(new TextDecoder().decode(decrypted));
+                } catch (e) {
+                    console.error('Decryption failed:', e);
+                    return null;
+                }
+            }
+
+            async sign(data) {
+                if (!this.authKey) return null;
+                const encoded = new TextEncoder().encode(JSON.stringify(data));
+                const signature = await window.crypto.subtle.sign('HMAC', this.authKey, encoded);
+                return this.bytesToHex(new Uint8Array(signature));
+            }
+
+            async verify(data, signatureHex) {
+                if (!this.authKey) return false;
+                const encoded = new TextEncoder().encode(JSON.stringify(data));
+                const signature = this.hexToBytes(signatureHex);
+                return await window.crypto.subtle.verify('HMAC', this.authKey, signature, encoded);
+            }
+
+            isReady() {
+                return this.encryptionKey !== null && this.authKey !== null;
+            }
+        }
 
         class IndianPokerClient {
             constructor() {
@@ -123,6 +206,8 @@
                 this.clientId = null;
                 this.roomId = null;
                 this.playerName = '';
+                this.securityHandler = new SecureMessageHandler();
+                this.securityEnabled = false;
                 this.updateStatus('Disconnected');
             }
 
@@ -140,121 +225,157 @@
                     this.ws = new WebSocket(WS_URL);
                     
                     this.ws.onopen = () => {
-                        this.log('✓ Connected to Indian Poker Server');
+                        this.log('Connected to Indian Poker Server');
                         this.updateStatus('Connected');
+                        this.initSecurity();
                     };
 
-                    this.ws.onmessage = (event) => {
+                    this.ws.onmessage = async (event) => {
                         const message = JSON.parse(event.data);
-                        this.handleMessage(message);
+                        await this.handleMessage(message);
                     };
 
                     this.ws.onclose = () => {
-                        this.log('✗ Disconnected from server');
+                        this.log('Disconnected from server');
                         this.updateStatus('Disconnected');
+                        this.securityEnabled = false;
                     };
 
                     this.ws.onerror = (error) => {
-                        this.log('✗ Connection error: ' + error);
+                        this.log('Connection error: ' + error);
                     };
                 } catch (error) {
-                    this.log('✗ Failed to connect: ' + error.message);
+                    this.log('Failed to connect: ' + error.message);
                 }
             }
 
-            handleMessage(message) {
-                const time = new Date().toLocaleTimeString();
-                
+            initSecurity() {
+                this.ws.send(JSON.stringify({ type: 'security_init' }));
+                this.log('Requesting security keys...');
+            }
+
+            async handleMessage(message) {
+                if (message.type === 'encrypted_message' && message.data) {
+                    const verified = await this.securityHandler.verify(message.data.encrypted, message.data.signature);
+                    if (!verified) {
+                        this.log('ERROR: Message signature verification failed');
+                        return;
+                    }
+                    const decrypted = await this.securityHandler.decrypt(message.data.encrypted);
+                    if (!decrypted) {
+                        this.log('ERROR: Failed to decrypt message');
+                        return;
+                    }
+                    message = decrypted;
+                }
+
                 switch (message.type) {
+                    case 'security_keys':
+                        await this.securityHandler.initKeys(message.data.encryptionKey, message.data.authKey);
+                        this.securityEnabled = true;
+                        this.log('Security initialized: ' + message.data.algorithm);
+                        break;
+
                     case 'connection_established':
                         this.clientId = message.data.clientId;
-                        this.log(`✓ Connected with ID: ${this.clientId}`);
-                        this.log(`Welcome message: ${message.data.message}`);
+                        this.log('Connected with ID: ' + this.clientId);
+                        this.log('Welcome message: ' + message.data.message);
                         break;
                         
                     case 'rooms_list':
-                        this.log('📋 Available rooms:');
+                        this.log('Available rooms:');
                         message.data.rooms.forEach(room => {
-                            this.log(`   - ${room.name} (${room.gameType}) [${room.playerCount}/${room.maxPlayers}]`);
+                            this.log('   - ' + room.name + ' (' + room.gameType + ') [' + room.playerCount + '/' + room.maxPlayers + ']');
                         });
                         break;
                         
                     case 'room_created':
                         this.roomId = message.data.room.id;
-                        this.log(`🏠 Created room: ${this.roomId}`);
-                        this.log(`   Room: ${message.data.room.name}`);
-                        this.log(`   Game: ${message.data.room.gameType}`);
+                        this.log('Created room: ' + this.roomId);
+                        this.log('   Room: ' + message.data.room.name);
+                        this.log('   Game: ' + message.data.room.gameType);
                         break;
                         
                     case 'room_joined':
                         this.roomId = message.data.room.id;
-                        this.log(`🚪 Joined room: ${this.roomId}`);
-                        this.log(`   Room: ${message.data.room.name}`);
-                        this.log(`   Game: ${message.data.room.gameType}`);
+                        this.log('Joined room: ' + this.roomId);
+                        this.log('   Room: ' + message.data.room.name);
+                        this.log('   Game: ' + message.data.room.gameType);
                         this.updateStatus('In Room');
                         break;
                         
                     case 'player_joined':
-                        this.log(`👋 Player joined: ${message.data.player.name}`);
+                        this.log('Player joined: ' + message.data.player.name);
                         break;
                         
                     case 'game_started':
-                        this.log(`🎮 Game started!`);
-                        this.log(`   ${message.data.message}`);
+                        this.log('Game started!');
+                        this.log('   ' + message.data.message);
                         break;
                         
                     case 'bet_made':
-                        this.log(`💰 ${message.data.playerName} bet ${message.data.amount}`);
+                        this.log(message.data.playerName + ' bet ' + message.data.amount);
                         break;
                         
                     case 'cards_shown':
-                        this.log(`🃏 ${message.data.playerName} showed: ${message.data.handValue.name}`);
-                        this.log(`   Cards: ${message.data.cards.join(', ')}`);
+                        this.log(message.data.playerName + ' showed: ' + message.data.handValue.name);
+                        this.log('   Cards: ' + message.data.cards.join(', '));
                         break;
                         
                     case 'player_folded':
-                        this.log(`🏃 ${message.data.playerName} folded`);
+                        this.log(message.data.playerName + ' folded');
                         break;
                         
                     case 'game_ended':
-                        this.log(`🎉 Game ended: ${message.data.message}`);
+                        this.log('Game ended: ' + message.data.message);
                         if (message.data.winningHand) {
-                            this.log(`   Winning hand: ${message.data.winningHand.name}`);
+                            this.log('   Winning hand: ' + message.data.winningHand.name);
                         }
                         break;
                         
                     case 'error':
-                        this.log(`❌ Error: ${message.data.message}`);
+                        this.log('ERROR: ' + message.data.message);
                         break;
                         
                     default:
-                        this.log(`📨 Unknown message: ${JSON.stringify(message)}`);
+                        this.log('Unknown message: ' + JSON.stringify(message));
                 }
             }
 
-            send(message) {
+            async send(message) {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify(message));
-                    this.log(`→ Sent: ${message.type}`);
+                    if (this.securityEnabled && this.securityHandler.isReady()) {
+                        const encrypted = await this.securityHandler.encrypt(message);
+                        const signature = await this.securityHandler.sign(encrypted);
+                        this.ws.send(JSON.stringify({
+                            type: 'encrypted_message',
+                            data: { encrypted: encrypted, signature: signature }
+                        }));
+                        this.log('Sent (encrypted): ' + message.type);
+                    } else {
+                        this.ws.send(JSON.stringify(message));
+                        this.log('Sent: ' + message.type);
+                    }
                 } else {
-                    this.log('✗ Not connected to server');
+                    this.log('Not connected to server');
                 }
             }
 
             updateStatus(status) {
                 const statusDiv = document.getElementById('status');
-                statusDiv.textContent = `Status: ${status}`;
-                statusDiv.className = `status ${status.toLowerCase().replace(' ', '-')}`;
+                statusDiv.textContent = 'Status: ' + status;
+                statusDiv.className = 'status ' + status.toLowerCase().replace(' ', '-');
             }
 
             log(message) {
                 const logDiv = document.getElementById('log');
                 const time = new Date().toLocaleTimeString();
-                logDiv.innerHTML += `<div>[${time}] ${message}</div>`;
+                const entry = document.createElement('div');
+                entry.textContent = '[' + time + '] ' + message;
+                logDiv.appendChild(entry);
                 logDiv.scrollTop = logDiv.scrollHeight;
             }
 
-            // API Methods
             createRoom() {
                 const variant = document.getElementById('gameVariant').value;
                 const roomName = document.getElementById('roomName').value.trim();
@@ -308,10 +429,8 @@
             }
         }
 
-        // Global client instance
         const client = new IndianPokerClient();
 
-        // Global functions for HTML buttons
         function connect() { client.connect(); }
         function createRoom() { client.createRoom(); }
         function listRooms() { client.listRooms(); }
@@ -322,7 +441,6 @@
         function fold() { client.fold(); }
         function showCards() { client.showCards(); }
 
-        // Auto-connect for demo
         setTimeout(() => {
             if (!client.ws || client.ws.readyState !== WebSocket.OPEN) {
                 client.log('Auto-connecting for demo...');

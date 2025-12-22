@@ -1522,6 +1522,577 @@ class AEADEncryption {
 }
 
 /**
+ * Message Encryption for WebSocket Communications
+ * Provides end-to-end encryption for sensitive game messages using AES-256-GCM
+ * with sequence numbers to prevent replay attacks.
+ * 
+ * SECURITY FEATURES:
+ * - AES-256-GCM authenticated encryption
+ * - Per-client encryption keys derived from game secret
+ * - Sequence numbers to prevent replay attacks
+ * - Timestamp validation to prevent delayed replay
+ */
+class MessageEncryption {
+    constructor(gameSecret) {
+        this.gameSecret = gameSecret || crypto.randomBytes(32).toString('hex');
+        this.sequenceNumbers = new Map(); // clientId -> sequence
+        this.algorithm = 'aes-256-gcm';
+        this.ivLength = 12; // 96 bits (recommended for GCM)
+        this.tagLength = 16; // 128 bits
+    }
+
+    /**
+     * Derive a unique encryption key for a specific client
+     * @param {string} clientId - Client identifier
+     * @returns {Buffer} Derived key
+     */
+    deriveClientKey(clientId) {
+        return crypto.createHmac('sha256', this.gameSecret)
+            .update(`client_key_${clientId}`)
+            .digest();
+    }
+
+    /**
+     * Get the next sequence number for a client
+     * @param {string} clientId - Client identifier
+     * @returns {number} Next sequence number
+     */
+    getNextSequence(clientId) {
+        const current = this.sequenceNumbers.get(clientId) || 0;
+        const next = current + 1;
+        this.sequenceNumbers.set(clientId, next);
+        return next;
+    }
+
+    /**
+     * Verify and update sequence number (returns false if replay detected)
+     * @param {string} clientId - Client identifier
+     * @param {number} sequence - Received sequence number
+     * @returns {boolean} True if valid, false if replay detected
+     */
+    verifySequence(clientId, sequence) {
+        const expected = (this.sequenceNumbers.get(clientId) || 0) + 1;
+        if (sequence <= (this.sequenceNumbers.get(clientId) || 0)) {
+            return false; // Replay attack detected
+        }
+        this.sequenceNumbers.set(clientId, sequence);
+        return true;
+    }
+
+    /**
+     * Encrypt a message for a specific client
+     * @param {string} clientId - Client identifier
+     * @param {object} message - Message to encrypt
+     * @returns {object} Encrypted message with metadata
+     */
+    encryptMessage(clientId, message) {
+        const key = this.deriveClientKey(clientId);
+        const iv = crypto.randomBytes(this.ivLength);
+        const sequence = this.getNextSequence(clientId);
+        const timestamp = Date.now();
+
+        const payload = JSON.stringify({
+            message: message,
+            sequence: sequence,
+            timestamp: timestamp
+        });
+
+        const cipher = crypto.createCipheriv(this.algorithm, key, iv, {
+            authTagLength: this.tagLength
+        });
+
+        const encrypted = Buffer.concat([
+            cipher.update(payload, 'utf8'),
+            cipher.final()
+        ]);
+        const authTag = cipher.getAuthTag();
+
+        return {
+            encrypted: true,
+            ciphertext: encrypted.toString('base64'),
+            iv: iv.toString('base64'),
+            authTag: authTag.toString('base64'),
+            sequence: sequence,
+            timestamp: timestamp
+        };
+    }
+
+    /**
+     * Decrypt a message from a specific client
+     * @param {string} clientId - Client identifier
+     * @param {object} encryptedData - Encrypted message data
+     * @returns {object|null} Decrypted message or null if failed
+     */
+    decryptMessage(clientId, encryptedData) {
+        try {
+            const key = this.deriveClientKey(clientId);
+            const iv = Buffer.from(encryptedData.iv, 'base64');
+            const authTag = Buffer.from(encryptedData.authTag, 'base64');
+            const ciphertext = Buffer.from(encryptedData.ciphertext, 'base64');
+
+            const decipher = crypto.createDecipheriv(this.algorithm, key, iv, {
+                authTagLength: this.tagLength
+            });
+            decipher.setAuthTag(authTag);
+
+            const decrypted = Buffer.concat([
+                decipher.update(ciphertext),
+                decipher.final()
+            ]);
+
+            const payload = JSON.parse(decrypted.toString('utf8'));
+
+            // Verify sequence number to prevent replay attacks
+            if (!this.verifySequence(clientId, payload.sequence)) {
+                console.warn(`Replay attack detected for client ${clientId}`);
+                return null;
+            }
+
+            // Verify timestamp (reject messages older than 5 minutes)
+            const maxAge = 5 * 60 * 1000; // 5 minutes
+            if (Date.now() - payload.timestamp > maxAge) {
+                console.warn(`Stale message detected for client ${clientId}`);
+                return null;
+            }
+
+            return payload.message;
+        } catch (error) {
+            console.error('Message decryption failed:', error.message);
+            return null;
+        }
+    }
+
+    /**
+     * Get client's current sequence number (for handshake)
+     * @param {string} clientId - Client identifier
+     * @returns {number} Current sequence number
+     */
+    getClientSequence(clientId) {
+        return this.sequenceNumbers.get(clientId) || 0;
+    }
+
+    /**
+     * Reset sequence for a client (on reconnection)
+     * @param {string} clientId - Client identifier
+     */
+    resetClientSequence(clientId) {
+        this.sequenceNumbers.delete(clientId);
+    }
+
+    /**
+     * Clean up client data
+     * @param {string} clientId - Client identifier
+     */
+    cleanupClient(clientId) {
+        this.sequenceNumbers.delete(clientId);
+    }
+}
+
+/**
+ * Message Authenticator using HMAC-SHA256
+ * Provides message authentication to verify message integrity and authenticity.
+ * 
+ * SECURITY FEATURES:
+ * - HMAC-SHA256 signatures
+ * - Per-client authentication keys
+ * - Constant-time comparison to prevent timing attacks
+ */
+class MessageAuthenticator {
+    constructor() {
+        this.clientKeys = new Map(); // clientId -> secret key
+    }
+
+    /**
+     * Generate a new authentication key for a client
+     * @param {string} clientId - Client identifier
+     * @returns {string} Generated key (hex encoded)
+     */
+    generateClientKey(clientId) {
+        const key = crypto.randomBytes(32);
+        this.clientKeys.set(clientId, key);
+        return key.toString('hex');
+    }
+
+    /**
+     * Set a client's authentication key
+     * @param {string} clientId - Client identifier
+     * @param {string} keyHex - Key in hex format
+     */
+    setClientKey(clientId, keyHex) {
+        this.clientKeys.set(clientId, Buffer.from(keyHex, 'hex'));
+    }
+
+    /**
+     * Get a client's authentication key
+     * @param {string} clientId - Client identifier
+     * @returns {Buffer|null} Client's key or null if not found
+     */
+    getClientKey(clientId) {
+        return this.clientKeys.get(clientId) || null;
+    }
+
+    /**
+     * Sign a message for a specific client
+     * @param {string} clientId - Client identifier
+     * @param {object} message - Message to sign
+     * @returns {string} HMAC signature (hex encoded)
+     */
+    signMessage(clientId, message) {
+        const key = this.clientKeys.get(clientId);
+        if (!key) {
+            throw new Error(`No authentication key for client ${clientId}`);
+        }
+
+        const hmac = crypto.createHmac('sha256', key);
+        hmac.update(JSON.stringify(message));
+        return hmac.digest('hex');
+    }
+
+    /**
+     * Verify a message signature
+     * @param {string} clientId - Client identifier
+     * @param {object} message - Message that was signed
+     * @param {string} signature - Signature to verify (hex encoded)
+     * @returns {boolean} True if signature is valid
+     */
+    verifyMessage(clientId, message, signature) {
+        const key = this.clientKeys.get(clientId);
+        if (!key) {
+            return false;
+        }
+
+        const expected = this.signMessage(clientId, message);
+        
+        // Constant-time comparison to prevent timing attacks
+        return ConstantTimeCompare.compareHex(expected, signature);
+    }
+
+    /**
+     * Clean up client data
+     * @param {string} clientId - Client identifier
+     */
+    cleanupClient(clientId) {
+        this.clientKeys.delete(clientId);
+    }
+}
+
+/**
+ * Anomaly Detector for Game Security
+ * Detects suspicious patterns that may indicate cheating or attacks.
+ * 
+ * DETECTION CAPABILITIES:
+ * - Impossible actions (bet exceeds chips)
+ * - Timing anomalies (suspiciously fast commits)
+ * - Pattern anomalies (possible bot behavior)
+ * - Rate anomalies (too many actions in short time)
+ */
+class AnomalyDetector {
+    constructor(options = {}) {
+        this.actionHistory = new Map(); // clientId -> action history
+        this.maxHistorySize = options.maxHistorySize || 100;
+        this.minCommitTime = options.minCommitTime || 100; // Minimum ms for human commit
+        this.maxActionsPerMinute = options.maxActionsPerMinute || 60;
+        this.alerts = [];
+        this.maxAlerts = options.maxAlerts || 1000;
+    }
+
+    /**
+     * Detect anomalies in a client action
+     * @param {string} clientId - Client identifier
+     * @param {string} action - Action type
+     * @param {object} context - Action context (chips, bet amount, game state, etc.)
+     * @returns {string[]} Array of detected anomalies
+     */
+    detectAnomalies(clientId, action, context) {
+        const anomalies = [];
+
+        // Detect impossible actions
+        if (action === 'make_bet' && context.betAmount > context.playerChips) {
+            anomalies.push('BET_EXCEEDS_CHIPS');
+        }
+
+        // Detect timing anomalies
+        if (action === 'commit_randomness') {
+            const timeSinceGameStart = Date.now() - (context.gameStartTime || Date.now());
+            if (timeSinceGameStart < this.minCommitTime) {
+                anomalies.push('SUSPICIOUSLY_FAST_COMMIT');
+            }
+        }
+
+        // Detect pattern anomalies (bot behavior)
+        const actionHistory = this.getActionHistory(clientId);
+        if (this.detectBotPattern(actionHistory)) {
+            anomalies.push('POSSIBLE_BOT_BEHAVIOR');
+        }
+
+        // Detect rate anomalies
+        const recentActions = actionHistory.filter(a => 
+            Date.now() - a.timestamp < 60000
+        );
+        if (recentActions.length > this.maxActionsPerMinute) {
+            anomalies.push('RATE_LIMIT_EXCEEDED');
+        }
+
+        // Record this action
+        this.recordAction(clientId, action, context);
+
+        // Log anomalies
+        if (anomalies.length > 0) {
+            this.raiseAlert(clientId, action, anomalies);
+        }
+
+        return anomalies;
+    }
+
+    /**
+     * Record an action in the history
+     * @param {string} clientId - Client identifier
+     * @param {string} action - Action type
+     * @param {object} context - Action context
+     */
+    recordAction(clientId, action, context) {
+        if (!this.actionHistory.has(clientId)) {
+            this.actionHistory.set(clientId, []);
+        }
+
+        const history = this.actionHistory.get(clientId);
+        history.push({
+            action: action,
+            timestamp: Date.now(),
+            context: context
+        });
+
+        // Limit history size
+        if (history.length > this.maxHistorySize) {
+            history.shift();
+        }
+    }
+
+    /**
+     * Get action history for a client
+     * @param {string} clientId - Client identifier
+     * @returns {Array} Action history
+     */
+    getActionHistory(clientId) {
+        return this.actionHistory.get(clientId) || [];
+    }
+
+    /**
+     * Detect bot-like patterns in action history
+     * @param {Array} history - Action history
+     * @returns {boolean} True if bot pattern detected
+     */
+    detectBotPattern(history) {
+        if (history.length < 10) {
+            return false;
+        }
+
+        // Check for perfectly regular timing (bots often have consistent delays)
+        const intervals = [];
+        for (let i = 1; i < history.length; i++) {
+            intervals.push(history[i].timestamp - history[i-1].timestamp);
+        }
+
+        if (intervals.length < 5) {
+            return false;
+        }
+
+        // Calculate variance in intervals
+        const mean = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+        const variance = intervals.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / intervals.length;
+        const stdDev = Math.sqrt(variance);
+
+        // Very low variance suggests automated behavior
+        // Human actions typically have high variance in timing
+        if (stdDev < 50 && mean < 500) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Raise an alert for detected anomalies
+     * @param {string} clientId - Client identifier
+     * @param {string} action - Action that triggered the alert
+     * @param {string[]} anomalies - Detected anomalies
+     */
+    raiseAlert(clientId, action, anomalies) {
+        const alert = {
+            clientId: clientId,
+            action: action,
+            anomalies: anomalies,
+            timestamp: Date.now()
+        };
+
+        this.alerts.push(alert);
+
+        // Limit alerts size
+        if (this.alerts.length > this.maxAlerts) {
+            this.alerts.shift();
+        }
+
+        console.warn(`ANOMALY DETECTED: Client ${clientId}, Action: ${action}, Anomalies: ${anomalies.join(', ')}`);
+    }
+
+    /**
+     * Get all alerts
+     * @param {object} options - Filter options
+     * @returns {Array} Alerts
+     */
+    getAlerts(options = {}) {
+        let alerts = this.alerts;
+
+        if (options.clientId) {
+            alerts = alerts.filter(a => a.clientId === options.clientId);
+        }
+
+        if (options.since) {
+            alerts = alerts.filter(a => a.timestamp >= options.since);
+        }
+
+        if (options.limit) {
+            alerts = alerts.slice(-options.limit);
+        }
+
+        return alerts;
+    }
+
+    /**
+     * Clean up client data
+     * @param {string} clientId - Client identifier
+     */
+    cleanupClient(clientId) {
+        this.actionHistory.delete(clientId);
+    }
+
+    /**
+     * Get statistics
+     * @returns {object} Statistics
+     */
+    getStatistics() {
+        return {
+            trackedClients: this.actionHistory.size,
+            totalAlerts: this.alerts.length,
+            recentAlerts: this.alerts.filter(a => Date.now() - a.timestamp < 3600000).length
+        };
+    }
+}
+
+/**
+ * Time-Locked Distributed Randomness
+ * Extends DistributedRandomness with time-lock commitments to prevent
+ * players from delaying their reveals to observe others.
+ * 
+ * SECURITY FEATURES:
+ * - Maximum reveal delay enforcement
+ * - Commitment timestamp tracking
+ * - Penalty for late reveals (exclusion from seed generation)
+ */
+class TimeLockRandomness extends DistributedRandomness {
+    constructor(options = {}) {
+        super();
+        this.maxRevealDelay = options.maxRevealDelay || 30000; // 30 seconds default
+        this.commitmentTimestamps = new Map(); // playerId -> timestamp
+        this.revealTimestamps = new Map(); // playerId -> timestamp
+        this.lateReveals = new Set(); // Players who revealed late
+    }
+
+    /**
+     * Override commitPlayerSeed to track commitment timestamp
+     */
+    commitPlayerSeed(playerId, commitment) {
+        const result = super.commitPlayerSeed(playerId, commitment);
+        if (result.success) {
+            this.commitmentTimestamps.set(playerId, Date.now());
+        }
+        return result;
+    }
+
+    /**
+     * Override revealPlayerSeed to enforce time-lock
+     */
+    revealPlayerSeed(playerId, seed) {
+        const commitTime = this.commitmentTimestamps.get(playerId);
+        if (!commitTime) {
+            return { success: false, error: 'No commitment timestamp found' };
+        }
+
+        const revealTime = Date.now();
+        const delay = revealTime - commitTime;
+
+        // Check if reveal is within time limit
+        if (delay > this.maxRevealDelay) {
+            this.lateReveals.add(playerId);
+            return { 
+                success: false, 
+                error: `Reveal timeout exceeded (${delay}ms > ${this.maxRevealDelay}ms)`,
+                late: true,
+                delay: delay
+            };
+        }
+
+        const result = super.revealPlayerSeed(playerId, seed);
+        if (result.success) {
+            this.revealTimestamps.set(playerId, revealTime);
+            result.delay = delay;
+        }
+        return result;
+    }
+
+    /**
+     * Get time-lock status for all players
+     */
+    getTimeLockStatus() {
+        const status = {};
+        for (const [playerId, commitTime] of this.commitmentTimestamps) {
+            const revealTime = this.revealTimestamps.get(playerId);
+            status[playerId] = {
+                commitTime: commitTime,
+                revealTime: revealTime || null,
+                delay: revealTime ? revealTime - commitTime : null,
+                isLate: this.lateReveals.has(playerId),
+                timeRemaining: revealTime ? 0 : Math.max(0, this.maxRevealDelay - (Date.now() - commitTime))
+            };
+        }
+        return status;
+    }
+
+    /**
+     * Get list of late reveals
+     */
+    getLateReveals() {
+        return Array.from(this.lateReveals);
+    }
+
+    /**
+     * Override reset to clear time-lock data
+     */
+    reset() {
+        super.reset();
+        this.commitmentTimestamps.clear();
+        this.revealTimestamps.clear();
+        this.lateReveals.clear();
+    }
+
+    /**
+     * Get extended transcript data including time-lock info
+     */
+    getTranscriptData() {
+        const baseData = super.getTranscriptData();
+        return {
+            ...baseData,
+            timeLock: {
+                maxRevealDelay: this.maxRevealDelay,
+                commitmentTimestamps: Object.fromEntries(this.commitmentTimestamps),
+                revealTimestamps: Object.fromEntries(this.revealTimestamps),
+                lateReveals: Array.from(this.lateReveals)
+            }
+        };
+    }
+}
+
+/**
  * VRF Documentation
  * 
  * RANDOMNESS APPROACH: Commit-Reveal Scheme
@@ -1577,5 +2148,9 @@ module.exports = {
     VerifiableShuffle,
     SecureDealingIndex,
     AEADEncryption,
+    MessageEncryption,
+    MessageAuthenticator,
+    AnomalyDetector,
+    TimeLockRandomness,
     VRF_DOCUMENTATION
 };
