@@ -1,7 +1,7 @@
 # Indian Poker Server Dockerfile
 # Includes groth16-snark for SNARK proof generation
 # Build context is the repo root (Railway auto-detects this)
-FROM node:18-alpine
+FROM node:25-alpine
 
 # Set working directory
 WORKDIR /app
