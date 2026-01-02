@@ -1419,6 +1419,19 @@ class IndianPokerServer {
             const clientIp = req.socket.remoteAddress || 'unknown';
             const clientOrigin = req.headers.origin || 'unknown';
 
+            // Security Enhancement: Origin validation (strict mode in production)
+            const originValidation = this.originValidator.validateOrigin(clientOrigin, req);
+            if (!originValidation.allowed) {
+                console.warn('Connection rejected - invalid origin: ' + clientOrigin);
+                this.auditLogger.logConnection('ORIGIN_REJECTED', {
+                    reason: originValidation.reason,
+                    ip: clientIp,
+                    origin: clientOrigin
+                });
+                ws.close(1008, 'Origin not allowed: ' + originValidation.reason);
+                return;
+            }
+
             console.log('New connection: ' + clientId + (securityCheck.warnings.length > 0 ? ' (warnings: ' + securityCheck.warnings.join(', ') + ')' : ''));
 
             // Audit log the connection
@@ -1441,6 +1454,13 @@ class IndianPokerServer {
                 lastMessageTime: null
             });
 
+            // Security Enhancement: Register session for timeout tracking
+            this.sessionTimeoutManager.registerSession(clientId, {
+                ip: clientIp,
+                origin: clientOrigin,
+                connectionTime: connectionTime
+            });
+
             this.sendMessage(clientId, {
                 type: 'connection_established',
                 data: {
@@ -1460,6 +1480,12 @@ class IndianPokerServer {
                         client.messageCount++;
                         client.lastMessageTime = Date.now();
 
+                        // Security Enhancement: Update session activity for timeout tracking
+                        this.sessionTimeoutManager.updateActivity(clientId);
+
+                        // Security Enhancement: Record message for PFS key rotation tracking
+                        this.perfectForwardSecrecy.recordMessage(clientId);
+
                         // Rate limiting per connection (max 100 messages per minute)
                         const timeSinceConnection = Date.now() - client.connectionTime;
                         const messagesPerMinute = (client.messageCount / timeSinceConnection) * 60000;
@@ -1475,7 +1501,22 @@ class IndianPokerServer {
                     }
 
                     const data = JSON.parse(message);
-                    this.handleClientMessage(clientId, data);
+
+                    // Security Enhancement: Validate and sanitize incoming message
+                    const validation = this.inputValidator.validateGameMessage(data);
+                    if (!validation.valid) {
+                        this.auditLogger.logSecurity('INPUT_VALIDATION_FAILED', {
+                            clientId,
+                            errors: validation.errors,
+                            messageType: data.type || 'unknown'
+                        });
+                        this.sendError(clientId, 'Invalid message: ' + validation.errors.join(', '));
+                        return;
+                    }
+
+                    // Use sanitized data if available
+                    const sanitizedData = validation.sanitized || data;
+                    this.handleClientMessage(clientId, sanitizedData);
                 } catch (error) {
                     console.error('❌ Error parsing message:', error);
                     this.sendError(clientId, 'Invalid message format');
@@ -1492,6 +1533,10 @@ class IndianPokerServer {
                         messageCount: client.messageCount
                     });
                 }
+                // Security Enhancement: Unregister session from timeout tracking
+                this.sessionTimeoutManager.unregisterSession(clientId);
+                // Security Enhancement: Clean up PFS keys for this client
+                this.perfectForwardSecrecy.cleanupClient(clientId);
                 this.handleDisconnection(clientId);
             });
 
