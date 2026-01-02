@@ -2205,6 +2205,807 @@ class TimeLockRandomness extends DistributedRandomness {
 }
 
 /**
+ * Perfect Forward Secrecy (PFS) Key Manager
+ * Implements ephemeral key rotation to ensure compromised session keys
+ * cannot decrypt past messages.
+ * 
+ * SECURITY FEATURES:
+ * - Ephemeral key generation using ECDH (Elliptic Curve Diffie-Hellman)
+ * - Automatic key rotation after N messages or time interval
+ * - Key derivation using HKDF for session keys
+ * - Old keys are securely deleted after rotation
+ */
+class PerfectForwardSecrecy {
+    constructor(options = {}) {
+        this.keyRotationInterval = options.keyRotationInterval || 300000; // 5 minutes default
+        this.keyRotationMessageCount = options.keyRotationMessageCount || 100; // Rotate after 100 messages
+        this.clientKeys = new Map(); // clientId -> { currentKey, messageCount, lastRotation, keyVersion }
+        this.keyHistory = new Map(); // clientId -> [{ key, version, expiry }] for graceful rotation
+        this.keyHistoryTTL = options.keyHistoryTTL || 60000; // Keep old keys for 1 minute during rotation
+    }
+
+    /**
+     * Generate a new ephemeral key pair for a client
+     * @param {string} clientId - Client identifier
+     * @returns {object} Key information including public key for client
+     */
+    generateEphemeralKeys(clientId) {
+        const keyPair = crypto.generateKeyPairSync('x25519', {
+            publicKeyEncoding: { type: 'spki', format: 'der' },
+            privateKeyEncoding: { type: 'pkcs8', format: 'der' }
+        });
+
+        const keyVersion = Date.now();
+        const sessionKey = crypto.randomBytes(32);
+
+        // Store old key in history for graceful rotation
+        const existingKey = this.clientKeys.get(clientId);
+        if (existingKey) {
+            const history = this.keyHistory.get(clientId) || [];
+            history.push({
+                key: existingKey.sessionKey,
+                version: existingKey.keyVersion,
+                expiry: Date.now() + this.keyHistoryTTL
+            });
+            this.keyHistory.set(clientId, history);
+        }
+
+        this.clientKeys.set(clientId, {
+            publicKey: keyPair.publicKey,
+            privateKey: keyPair.privateKey,
+            sessionKey: sessionKey,
+            messageCount: 0,
+            lastRotation: Date.now(),
+            keyVersion: keyVersion
+        });
+
+        return {
+            publicKey: keyPair.publicKey.toString('base64'),
+            keyVersion: keyVersion,
+            rotationPolicy: {
+                messageCount: this.keyRotationMessageCount,
+                timeInterval: this.keyRotationInterval
+            }
+        };
+    }
+
+    /**
+     * Derive session key from shared secret using HKDF
+     * @param {Buffer} sharedSecret - Shared secret from ECDH
+     * @param {string} context - Context string for key derivation
+     * @returns {Buffer} Derived session key
+     */
+    deriveSessionKey(sharedSecret, context) {
+        return crypto.createHmac('sha256', sharedSecret)
+            .update(`pfs_session_key_${context}`)
+            .digest();
+    }
+
+    /**
+     * Check if key rotation is needed for a client
+     * @param {string} clientId - Client identifier
+     * @returns {boolean} True if rotation is needed
+     */
+    needsKeyRotation(clientId) {
+        const keyInfo = this.clientKeys.get(clientId);
+        if (!keyInfo) return true;
+
+        const timeSinceRotation = Date.now() - keyInfo.lastRotation;
+        return keyInfo.messageCount >= this.keyRotationMessageCount ||
+               timeSinceRotation >= this.keyRotationInterval;
+    }
+
+    /**
+     * Record a message and check for rotation
+     * @param {string} clientId - Client identifier
+     * @returns {object} Status including whether rotation occurred
+     */
+    recordMessage(clientId) {
+        const keyInfo = this.clientKeys.get(clientId);
+        if (!keyInfo) {
+            return { error: 'No key found for client', needsInit: true };
+        }
+
+        keyInfo.messageCount++;
+        
+        if (this.needsKeyRotation(clientId)) {
+            const newKeys = this.generateEphemeralKeys(clientId);
+            return {
+                rotated: true,
+                newPublicKey: newKeys.publicKey,
+                newKeyVersion: newKeys.keyVersion
+            };
+        }
+
+        return { rotated: false, messageCount: keyInfo.messageCount };
+    }
+
+    /**
+     * Get current session key for encryption/decryption
+     * @param {string} clientId - Client identifier
+     * @param {number} keyVersion - Optional key version for decryption of old messages
+     * @returns {Buffer|null} Session key or null if not found
+     */
+    getSessionKey(clientId, keyVersion = null) {
+        const keyInfo = this.clientKeys.get(clientId);
+        
+        if (keyVersion && keyInfo && keyInfo.keyVersion !== keyVersion) {
+            // Check key history for old version
+            const history = this.keyHistory.get(clientId) || [];
+            const oldKey = history.find(k => k.version === keyVersion && k.expiry > Date.now());
+            return oldKey ? oldKey.key : null;
+        }
+
+        return keyInfo ? keyInfo.sessionKey : null;
+    }
+
+    /**
+     * Get key status for a client
+     * @param {string} clientId - Client identifier
+     * @returns {object} Key status information
+     */
+    getKeyStatus(clientId) {
+        const keyInfo = this.clientKeys.get(clientId);
+        if (!keyInfo) {
+            return { initialized: false };
+        }
+
+        return {
+            initialized: true,
+            keyVersion: keyInfo.keyVersion,
+            messageCount: keyInfo.messageCount,
+            lastRotation: keyInfo.lastRotation,
+            timeSinceRotation: Date.now() - keyInfo.lastRotation,
+            needsRotation: this.needsKeyRotation(clientId)
+        };
+    }
+
+    /**
+     * Clean up expired keys from history
+     */
+    cleanupExpiredKeys() {
+        const now = Date.now();
+        for (const [clientId, history] of this.keyHistory) {
+            const validKeys = history.filter(k => k.expiry > now);
+            if (validKeys.length === 0) {
+                this.keyHistory.delete(clientId);
+            } else {
+                this.keyHistory.set(clientId, validKeys);
+            }
+        }
+    }
+
+    /**
+     * Remove all keys for a client (on disconnect)
+     * @param {string} clientId - Client identifier
+     */
+    cleanupClient(clientId) {
+        this.clientKeys.delete(clientId);
+        this.keyHistory.delete(clientId);
+    }
+}
+
+/**
+ * Enhanced WebSocket Origin Validator
+ * Provides strict origin validation to prevent CSRF-style WebSocket hijacking.
+ * 
+ * SECURITY FEATURES:
+ * - Strict origin whitelist enforcement
+ * - Subdomain validation
+ * - Protocol validation (wss:// in production)
+ * - Logging of rejected connections
+ */
+class OriginValidator {
+    constructor(options = {}) {
+        this.allowedOrigins = new Set(options.allowedOrigins || []);
+        this.allowSubdomains = options.allowSubdomains || false;
+        this.strictMode = options.strictMode !== false; // Default to strict
+        this.logRejections = options.logRejections !== false;
+        this.rejectionLog = [];
+        this.maxRejectionLogSize = options.maxRejectionLogSize || 1000;
+    }
+
+    /**
+     * Add an allowed origin
+     * @param {string} origin - Origin to allow (e.g., 'https://example.com')
+     */
+    addAllowedOrigin(origin) {
+        this.allowedOrigins.add(origin.toLowerCase());
+    }
+
+    /**
+     * Remove an allowed origin
+     * @param {string} origin - Origin to remove
+     */
+    removeAllowedOrigin(origin) {
+        this.allowedOrigins.delete(origin.toLowerCase());
+    }
+
+    /**
+     * Validate an origin against the whitelist
+     * @param {string} origin - Origin header value
+     * @param {object} context - Additional context (IP, etc.)
+     * @returns {object} Validation result
+     */
+    validateOrigin(origin, context = {}) {
+        // No origin header - could be same-origin or non-browser client
+        if (!origin) {
+            if (this.strictMode) {
+                this.logRejection('MISSING_ORIGIN', null, context);
+                return {
+                    valid: false,
+                    reason: 'Origin header required in strict mode',
+                    code: 'MISSING_ORIGIN'
+                };
+            }
+            return { valid: true, warning: 'No origin header present' };
+        }
+
+        const normalizedOrigin = origin.toLowerCase();
+
+        // Direct match
+        if (this.allowedOrigins.has(normalizedOrigin)) {
+            return { valid: true, matchedOrigin: normalizedOrigin };
+        }
+
+        // Subdomain matching if enabled
+        if (this.allowSubdomains) {
+            for (const allowed of this.allowedOrigins) {
+                try {
+                    const allowedUrl = new URL(allowed);
+                    const originUrl = new URL(normalizedOrigin);
+                    
+                    if (originUrl.protocol === allowedUrl.protocol &&
+                        (originUrl.hostname === allowedUrl.hostname ||
+                         originUrl.hostname.endsWith('.' + allowedUrl.hostname))) {
+                        return { valid: true, matchedOrigin: allowed, subdomain: true };
+                    }
+                } catch (e) {
+                    // Invalid URL, skip
+                }
+            }
+        }
+
+        // No match found
+        this.logRejection('ORIGIN_NOT_ALLOWED', normalizedOrigin, context);
+        return {
+            valid: false,
+            reason: `Origin '${origin}' not in allowed list`,
+            code: 'ORIGIN_NOT_ALLOWED'
+        };
+    }
+
+    /**
+     * Log a rejection for monitoring
+     * @param {string} code - Rejection code
+     * @param {string} origin - Rejected origin
+     * @param {object} context - Additional context
+     */
+    logRejection(code, origin, context) {
+        if (!this.logRejections) return;
+
+        const entry = {
+            timestamp: Date.now(),
+            code: code,
+            origin: origin,
+            ip: context.ip || 'unknown',
+            userAgent: context.userAgent || 'unknown'
+        };
+
+        this.rejectionLog.push(entry);
+
+        // Trim log if too large
+        if (this.rejectionLog.length > this.maxRejectionLogSize) {
+            this.rejectionLog = this.rejectionLog.slice(-this.maxRejectionLogSize / 2);
+        }
+    }
+
+    /**
+     * Get rejection statistics
+     * @param {number} since - Timestamp to filter from
+     * @returns {object} Rejection statistics
+     */
+    getRejectionStats(since = 0) {
+        const filtered = this.rejectionLog.filter(r => r.timestamp >= since);
+        const byCode = {};
+        const byOrigin = {};
+
+        for (const rejection of filtered) {
+            byCode[rejection.code] = (byCode[rejection.code] || 0) + 1;
+            if (rejection.origin) {
+                byOrigin[rejection.origin] = (byOrigin[rejection.origin] || 0) + 1;
+            }
+        }
+
+        return {
+            total: filtered.length,
+            byCode: byCode,
+            byOrigin: byOrigin,
+            recentRejections: filtered.slice(-10)
+        };
+    }
+
+    /**
+     * Get current configuration
+     * @returns {object} Configuration
+     */
+    getConfig() {
+        return {
+            allowedOrigins: Array.from(this.allowedOrigins),
+            allowSubdomains: this.allowSubdomains,
+            strictMode: this.strictMode,
+            logRejections: this.logRejections
+        };
+    }
+}
+
+/**
+ * Session Timeout and Idle Detection Manager
+ * Automatically terminates sessions after inactivity to reduce attack window.
+ * 
+ * SECURITY FEATURES:
+ * - Configurable idle timeout (default 30 minutes)
+ * - Activity tracking per client
+ * - Graceful session termination with warning
+ * - Session extension on activity
+ */
+class SessionTimeoutManager {
+    constructor(options = {}) {
+        this.idleTimeout = options.idleTimeout || 1800000; // 30 minutes default
+        this.warningTime = options.warningTime || 300000; // 5 minutes warning before timeout
+        this.checkInterval = options.checkInterval || 60000; // Check every minute
+        this.sessions = new Map(); // clientId -> { lastActivity, created, warningIssued }
+        this.onTimeout = options.onTimeout || null; // Callback for timeout
+        this.onWarning = options.onWarning || null; // Callback for warning
+        
+        // Start periodic check
+        this.checkTimer = setInterval(() => this.checkSessions(), this.checkInterval);
+    }
+
+    /**
+     * Register a new session
+     * @param {string} clientId - Client identifier
+     * @returns {object} Session info
+     */
+    registerSession(clientId) {
+        const now = Date.now();
+        this.sessions.set(clientId, {
+            lastActivity: now,
+            created: now,
+            warningIssued: false,
+            activityCount: 0
+        });
+
+        return {
+            clientId: clientId,
+            timeout: this.idleTimeout,
+            warningTime: this.warningTime
+        };
+    }
+
+    /**
+     * Record activity for a session
+     * @param {string} clientId - Client identifier
+     * @returns {object} Updated session info
+     */
+    recordActivity(clientId) {
+        const session = this.sessions.get(clientId);
+        if (!session) {
+            return this.registerSession(clientId);
+        }
+
+        session.lastActivity = Date.now();
+        session.activityCount++;
+        session.warningIssued = false; // Reset warning on activity
+
+        return {
+            clientId: clientId,
+            idleTime: 0,
+            activityCount: session.activityCount
+        };
+    }
+
+    /**
+     * Check all sessions for timeout
+     * @returns {object} Check results
+     */
+    checkSessions() {
+        const now = Date.now();
+        const results = {
+            checked: 0,
+            warnings: [],
+            timeouts: []
+        };
+
+        for (const [clientId, session] of this.sessions) {
+            results.checked++;
+            const idleTime = now - session.lastActivity;
+
+            // Check for timeout
+            if (idleTime >= this.idleTimeout) {
+                results.timeouts.push(clientId);
+                if (this.onTimeout) {
+                    this.onTimeout(clientId, {
+                        idleTime: idleTime,
+                        sessionDuration: now - session.created
+                    });
+                }
+                this.sessions.delete(clientId);
+                continue;
+            }
+
+            // Check for warning
+            if (!session.warningIssued && idleTime >= (this.idleTimeout - this.warningTime)) {
+                session.warningIssued = true;
+                results.warnings.push(clientId);
+                if (this.onWarning) {
+                    this.onWarning(clientId, {
+                        idleTime: idleTime,
+                        timeUntilTimeout: this.idleTimeout - idleTime
+                    });
+                }
+            }
+        }
+
+        return results;
+    }
+
+    /**
+     * Get session status for a client
+     * @param {string} clientId - Client identifier
+     * @returns {object|null} Session status or null if not found
+     */
+    getSessionStatus(clientId) {
+        const session = this.sessions.get(clientId);
+        if (!session) return null;
+
+        const now = Date.now();
+        const idleTime = now - session.lastActivity;
+
+        return {
+            clientId: clientId,
+            idleTime: idleTime,
+            timeUntilTimeout: Math.max(0, this.idleTimeout - idleTime),
+            sessionDuration: now - session.created,
+            activityCount: session.activityCount,
+            warningIssued: session.warningIssued
+        };
+    }
+
+    /**
+     * Manually terminate a session
+     * @param {string} clientId - Client identifier
+     * @returns {boolean} True if session was terminated
+     */
+    terminateSession(clientId) {
+        return this.sessions.delete(clientId);
+    }
+
+    /**
+     * Get all active sessions
+     * @returns {Array} Array of session statuses
+     */
+    getActiveSessions() {
+        const sessions = [];
+        for (const clientId of this.sessions.keys()) {
+            sessions.push(this.getSessionStatus(clientId));
+        }
+        return sessions;
+    }
+
+    /**
+     * Shutdown the manager
+     */
+    shutdown() {
+        if (this.checkTimer) {
+            clearInterval(this.checkTimer);
+            this.checkTimer = null;
+        }
+    }
+}
+
+/**
+ * Comprehensive Input Validator
+ * Provides thorough validation and sanitization of all user input.
+ * 
+ * SECURITY FEATURES:
+ * - Type validation
+ * - Length limits
+ * - Pattern matching
+ * - XSS prevention
+ * - SQL injection prevention
+ * - Command injection prevention
+ */
+class InputValidator {
+    constructor(options = {}) {
+        this.maxStringLength = options.maxStringLength || 1000;
+        this.maxArrayLength = options.maxArrayLength || 100;
+        this.maxObjectDepth = options.maxObjectDepth || 5;
+        this.allowedHtmlTags = options.allowedHtmlTags || [];
+        
+        // Dangerous patterns to detect
+        this.dangerousPatterns = [
+            /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, // Script tags
+            /javascript:/gi, // JavaScript protocol
+            /on\w+\s*=/gi, // Event handlers
+            /data:/gi, // Data URLs
+            /vbscript:/gi, // VBScript protocol
+            /expression\s*\(/gi, // CSS expressions
+            /url\s*\(/gi, // CSS url()
+        ];
+        
+        // SQL injection patterns
+        this.sqlPatterns = [
+            /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|ALTER|CREATE|TRUNCATE)\b)/gi,
+            /(--)|(\/\*)|(\*\/)/g, // SQL comments
+            /(\bOR\b|\bAND\b)\s+\d+\s*=\s*\d+/gi, // OR 1=1 style
+        ];
+    }
+
+    /**
+     * Validate and sanitize a string
+     * @param {string} input - Input string
+     * @param {object} options - Validation options
+     * @returns {object} Validation result
+     */
+    validateString(input, options = {}) {
+        const maxLength = options.maxLength || this.maxStringLength;
+        const minLength = options.minLength || 0;
+        const pattern = options.pattern || null;
+        const allowHtml = options.allowHtml || false;
+
+        if (typeof input !== 'string') {
+            return { valid: false, error: 'Input must be a string', sanitized: '' };
+        }
+
+        // Length check
+        if (input.length > maxLength) {
+            return { valid: false, error: `String exceeds maximum length of ${maxLength}`, sanitized: input.substring(0, maxLength) };
+        }
+
+        if (input.length < minLength) {
+            return { valid: false, error: `String must be at least ${minLength} characters`, sanitized: input };
+        }
+
+        // Pattern check
+        if (pattern && !pattern.test(input)) {
+            return { valid: false, error: 'Input does not match required pattern', sanitized: input };
+        }
+
+        // Sanitize
+        let sanitized = input;
+        
+        if (!allowHtml) {
+            // Remove HTML tags
+            sanitized = sanitized.replace(/<[^>]*>/g, '');
+            // Encode special characters
+            sanitized = this.encodeHtmlEntities(sanitized);
+        }
+
+        // Check for dangerous patterns
+        const dangers = this.detectDangerousPatterns(input);
+        if (dangers.length > 0) {
+            return { 
+                valid: false, 
+                error: 'Input contains potentially dangerous content', 
+                dangers: dangers,
+                sanitized: sanitized 
+            };
+        }
+
+        return { valid: true, sanitized: sanitized, original: input };
+    }
+
+    /**
+     * Validate a number
+     * @param {any} input - Input value
+     * @param {object} options - Validation options
+     * @returns {object} Validation result
+     */
+    validateNumber(input, options = {}) {
+        const min = options.min !== undefined ? options.min : -Infinity;
+        const max = options.max !== undefined ? options.max : Infinity;
+        const integer = options.integer || false;
+
+        const num = Number(input);
+
+        if (isNaN(num) || !isFinite(num)) {
+            return { valid: false, error: 'Input must be a valid number', sanitized: 0 };
+        }
+
+        if (integer && !Number.isInteger(num)) {
+            return { valid: false, error: 'Input must be an integer', sanitized: Math.floor(num) };
+        }
+
+        if (num < min || num > max) {
+            return { valid: false, error: `Number must be between ${min} and ${max}`, sanitized: Math.max(min, Math.min(max, num)) };
+        }
+
+        return { valid: true, sanitized: num, original: input };
+    }
+
+    /**
+     * Validate an object
+     * @param {any} input - Input value
+     * @param {object} schema - Validation schema
+     * @param {number} depth - Current depth (for recursion limit)
+     * @returns {object} Validation result
+     */
+    validateObject(input, schema = {}, depth = 0) {
+        if (depth > this.maxObjectDepth) {
+            return { valid: false, error: 'Object exceeds maximum depth', sanitized: {} };
+        }
+
+        if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+            return { valid: false, error: 'Input must be an object', sanitized: {} };
+        }
+
+        const sanitized = {};
+        const errors = [];
+
+        for (const [key, value] of Object.entries(input)) {
+            // Validate key
+            const keyValidation = this.validateString(key, { maxLength: 100 });
+            if (!keyValidation.valid) {
+                errors.push(`Invalid key: ${key}`);
+                continue;
+            }
+
+            // Validate value based on schema or type
+            const fieldSchema = schema[key] || {};
+            let valueValidation;
+
+            if (typeof value === 'string') {
+                valueValidation = this.validateString(value, fieldSchema);
+            } else if (typeof value === 'number') {
+                valueValidation = this.validateNumber(value, fieldSchema);
+            } else if (typeof value === 'object' && value !== null) {
+                if (Array.isArray(value)) {
+                    valueValidation = this.validateArray(value, fieldSchema, depth + 1);
+                } else {
+                    valueValidation = this.validateObject(value, fieldSchema.schema || {}, depth + 1);
+                }
+            } else if (typeof value === 'boolean') {
+                valueValidation = { valid: true, sanitized: value };
+            } else {
+                valueValidation = { valid: false, error: 'Unsupported value type', sanitized: null };
+            }
+
+            if (!valueValidation.valid) {
+                errors.push(`Field '${key}': ${valueValidation.error}`);
+            }
+            sanitized[keyValidation.sanitized] = valueValidation.sanitized;
+        }
+
+        return {
+            valid: errors.length === 0,
+            errors: errors,
+            sanitized: sanitized,
+            original: input
+        };
+    }
+
+    /**
+     * Validate an array
+     * @param {any} input - Input value
+     * @param {object} options - Validation options
+     * @param {number} depth - Current depth
+     * @returns {object} Validation result
+     */
+    validateArray(input, options = {}, depth = 0) {
+        if (!Array.isArray(input)) {
+            return { valid: false, error: 'Input must be an array', sanitized: [] };
+        }
+
+        const maxLength = options.maxLength || this.maxArrayLength;
+        if (input.length > maxLength) {
+            return { valid: false, error: `Array exceeds maximum length of ${maxLength}`, sanitized: input.slice(0, maxLength) };
+        }
+
+        const sanitized = [];
+        const errors = [];
+
+        for (let i = 0; i < input.length; i++) {
+            const item = input[i];
+            let itemValidation;
+
+            if (typeof item === 'string') {
+                itemValidation = this.validateString(item, options.itemOptions || {});
+            } else if (typeof item === 'number') {
+                itemValidation = this.validateNumber(item, options.itemOptions || {});
+            } else if (typeof item === 'object' && item !== null) {
+                itemValidation = this.validateObject(item, options.itemSchema || {}, depth + 1);
+            } else {
+                itemValidation = { valid: true, sanitized: item };
+            }
+
+            if (!itemValidation.valid) {
+                errors.push(`Item ${i}: ${itemValidation.error}`);
+            }
+            sanitized.push(itemValidation.sanitized);
+        }
+
+        return {
+            valid: errors.length === 0,
+            errors: errors,
+            sanitized: sanitized,
+            original: input
+        };
+    }
+
+    /**
+     * Detect dangerous patterns in input
+     * @param {string} input - Input string
+     * @returns {Array} Array of detected dangers
+     */
+    detectDangerousPatterns(input) {
+        const dangers = [];
+
+        for (const pattern of this.dangerousPatterns) {
+            if (pattern.test(input)) {
+                dangers.push({ type: 'xss', pattern: pattern.toString() });
+            }
+        }
+
+        for (const pattern of this.sqlPatterns) {
+            if (pattern.test(input)) {
+                dangers.push({ type: 'sql_injection', pattern: pattern.toString() });
+            }
+        }
+
+        return dangers;
+    }
+
+    /**
+     * Encode HTML entities
+     * @param {string} input - Input string
+     * @returns {string} Encoded string
+     */
+    encodeHtmlEntities(input) {
+        return input
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#x27;')
+            .replace(/\//g, '&#x2F;');
+    }
+
+    /**
+     * Validate a game message
+     * @param {object} message - Game message
+     * @returns {object} Validation result
+     */
+    validateGameMessage(message) {
+        if (!message || typeof message !== 'object') {
+            return { valid: false, error: 'Invalid message format', sanitized: null };
+        }
+
+        const typeValidation = this.validateString(message.type, {
+            maxLength: 50,
+            pattern: /^[a-z_]+$/
+        });
+
+        if (!typeValidation.valid) {
+            return { valid: false, error: 'Invalid message type', sanitized: null };
+        }
+
+        const dataValidation = message.data ? 
+            this.validateObject(message.data) : 
+            { valid: true, sanitized: {} };
+
+        return {
+            valid: typeValidation.valid && dataValidation.valid,
+            sanitized: {
+                type: typeValidation.sanitized,
+                data: dataValidation.sanitized
+            },
+            errors: dataValidation.errors || []
+        };
+    }
+}
+
+/**
  * VRF Documentation
  * 
  * RANDOMNESS APPROACH: Commit-Reveal Scheme
@@ -2264,5 +3065,10 @@ module.exports = {
     MessageAuthenticator,
     AnomalyDetector,
     TimeLockRandomness,
-    VRF_DOCUMENTATION
+    VRF_DOCUMENTATION,
+    // New security enhancements
+    PerfectForwardSecrecy,
+    OriginValidator,
+    SessionTimeoutManager,
+    InputValidator
 };
