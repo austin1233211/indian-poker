@@ -37,7 +37,12 @@ const {
     MessageAuthenticator,
     AnomalyDetector,
     TimeLockRandomness,
-    VRF_DOCUMENTATION
+    VRF_DOCUMENTATION,
+    // New security enhancements
+    PerfectForwardSecrecy,
+    OriginValidator,
+    SessionTimeoutManager,
+    InputValidator
 } = require('./security-utils');
 
 // ZK Proofs Configuration
@@ -1243,6 +1248,42 @@ class IndianPokerServer {
             maxActionsPerMinute: 60
         });
         this.clientSecurityEnabled = new Map();
+
+        // New Security Enhancements
+        // Perfect Forward Secrecy - key rotation with ephemeral keys
+        this.perfectForwardSecrecy = new PerfectForwardSecrecy({
+            keyRotationInterval: 300000, // 5 minutes
+            keyRotationMessageCount: 100, // Rotate after 100 messages
+            keyHistoryTTL: 60000 // Keep old keys for 1 minute during rotation
+        });
+
+        // Enhanced Origin Validation - strict origin header validation
+        this.originValidator = new OriginValidator({
+            allowedOrigins: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [],
+            allowSubdomains: process.env.ALLOW_SUBDOMAINS === 'true',
+            strictMode: process.env.NODE_ENV === 'production',
+            logRejections: true
+        });
+
+        // Session Timeout Manager - automatic session termination after inactivity
+        this.sessionTimeoutManager = new SessionTimeoutManager({
+            idleTimeout: parseInt(process.env.SESSION_IDLE_TIMEOUT) || 1800000, // 30 minutes default
+            warningTime: 300000, // 5 minutes warning before timeout
+            checkInterval: 60000, // Check every minute
+            onTimeout: (clientId, info) => {
+                this.handleSessionTimeout(clientId, info);
+            },
+            onWarning: (clientId, info) => {
+                this.sendSessionTimeoutWarning(clientId, info);
+            }
+        });
+
+        // Input Validator - comprehensive input validation and sanitization
+        this.inputValidator = new InputValidator({
+            maxStringLength: 1000,
+            maxArrayLength: 100,
+            maxObjectDepth: 5
+        });
 
         // Create HTTP server for health checks (required for Railway deployment)
         this.httpServer = http.createServer((req, res) => {
@@ -3085,6 +3126,97 @@ class IndianPokerServer {
             this.auditLogger.logSecurity('decryption_failed', { clientId, error: err.message });
             return null;
         }
+    }
+
+    /**
+     * Handle session timeout - disconnect client after idle period
+     * @param {string} clientId - Client identifier
+     * @param {object} info - Timeout information
+     */
+    handleSessionTimeout(clientId, info) {
+        const client = this.clients.get(clientId);
+        if (!client) return;
+
+        this.auditLogger.logSecurity('session_timeout', {
+            clientId,
+            idleTime: info.idleTime,
+            sessionDuration: info.sessionDuration
+        });
+
+        // Send timeout notification before disconnecting
+        this.sendMessage(clientId, {
+            type: 'session_timeout',
+            data: {
+                message: 'Session terminated due to inactivity',
+                idleTime: info.idleTime,
+                sessionDuration: info.sessionDuration
+            }
+        });
+
+        // Clean up client resources
+        this.handleDisconnection(clientId);
+
+        // Close WebSocket connection
+        if (client.ws && client.ws.readyState === WebSocket.OPEN) {
+            client.ws.close(1000, 'Session timeout due to inactivity');
+        }
+
+        // Clean up PFS keys
+        this.perfectForwardSecrecy.cleanupClient(clientId);
+    }
+
+    /**
+     * Send session timeout warning to client
+     * @param {string} clientId - Client identifier
+     * @param {object} info - Warning information
+     */
+    sendSessionTimeoutWarning(clientId, info) {
+        this.sendMessage(clientId, {
+            type: 'session_timeout_warning',
+            data: {
+                message: 'Your session will expire soon due to inactivity',
+                idleTime: info.idleTime,
+                timeUntilTimeout: info.timeUntilTimeout
+            }
+        });
+
+        this.auditLogger.logSecurity('session_timeout_warning', {
+            clientId,
+            idleTime: info.idleTime,
+            timeUntilTimeout: info.timeUntilTimeout
+        });
+    }
+
+    /**
+     * Get enhanced security status including new security features
+     * @returns {object} Security status
+     */
+    getEnhancedSecurityStatus() {
+        return {
+            perfectForwardSecrecy: {
+                enabled: true,
+                keyRotationInterval: this.perfectForwardSecrecy.keyRotationInterval,
+                keyRotationMessageCount: this.perfectForwardSecrecy.keyRotationMessageCount
+            },
+            originValidation: {
+                enabled: true,
+                strictMode: this.originValidator.strictMode,
+                allowedOriginsCount: this.originValidator.allowedOrigins.size,
+                rejectionStats: this.originValidator.getRejectionStats(Date.now() - 3600000) // Last hour
+            },
+            sessionTimeout: {
+                enabled: true,
+                idleTimeout: this.sessionTimeoutManager.idleTimeout,
+                warningTime: this.sessionTimeoutManager.warningTime,
+                activeSessions: this.sessionTimeoutManager.getActiveSessions().length
+            },
+            inputValidation: {
+                enabled: true,
+                maxStringLength: this.inputValidator.maxStringLength,
+                maxArrayLength: this.inputValidator.maxArrayLength,
+                maxObjectDepth: this.inputValidator.maxObjectDepth
+            }
+        };
     }
 }
 
