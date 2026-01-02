@@ -1,0 +1,139 @@
+# Dependabot Configuration for Indian Poker
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  # Main Game Server (indian-poker-server)
+  - package-ecosystem: "npm"
+    directory: "/indian-poker-github/indian-poker-server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "austin1233211"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "deps(server)"
+    # Group minor and patch updates together
+    groups:
+      production-dependencies:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "eslint*"
+          - "prettier*"
+          - "jest*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # PIR Server
+  - package-ecosystem: "npm"
+    directory: "/indian-poker-github/pir-server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "austin1233211"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "deps(pir)"
+    groups:
+      production-dependencies:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "eslint*"
+          - "prettier*"
+          - "jest*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # SNARK Library
+  - package-ecosystem: "npm"
+    directory: "/indian-poker-github/groth16-snark"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "austin1233211"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "deps(snark)"
+
+  # WASM Crypto Module
+  - package-ecosystem: "npm"
+    directory: "/indian-poker-github/wasm-crypto"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "austin1233211"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "deps(wasm)"
+
+  # GitHub Actions (if any)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "austin1233211"
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "ci(actions)"
+
+  # Docker dependencies
+  - package-ecosystem: "docker"
+    directory: "/indian-poker-github/indian-poker-server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    reviewers:
+      - "austin1233211"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "deps(docker)"
+
+  - package-ecosystem: "docker"
+    directory: "/indian-poker-github/pir-server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    reviewers:
+      - "austin1233211"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "deps(docker)"
