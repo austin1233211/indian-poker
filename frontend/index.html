@@ -10,7 +10,7 @@
         style-src 'self' 'unsafe-inline';
         connect-src 'self' ws: wss: http: https:;
         img-src 'self' data:;
-        font-src 'self';
+        font-src 'self' https://fonts.gstatic.com https://fonts.googleapis.com;
         object-src 'none';
         base-uri 'self';
         form-action 'self';
@@ -21,118 +21,268 @@
     <meta http-equiv="X-Content-Type-Options" content="nosniff">
     <meta http-equiv="X-Frame-Options" content="DENY">
     <meta name="referrer" content="strict-origin-when-cross-origin">
-    <title>Indian Poker Client Example</title>
+    <title>Indian Poker - Play Now</title>
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg-primary: #0a0e17;
+            --bg-secondary: #111827;
+            --bg-card: #1a1f2e;
+            --accent-primary: #00f0ff;
+            --accent-secondary: #ff00aa;
+            --accent-gold: #ffd700;
+            --accent-green: #00ff88;
+            --accent-red: #ff4757;
+            --text-primary: #ffffff;
+            --text-secondary: #a0aec0;
+            --text-muted: #64748b;
+            --border-color: #2d3748;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f5f5f5;
+            font-family: 'Rajdhani', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            background-image: radial-gradient(ellipse at top, rgba(0, 240, 255, 0.1) 0%, transparent 50%),
+                              radial-gradient(ellipse at bottom, rgba(255, 0, 170, 0.1) 0%, transparent 50%);
         }
-        .container {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        .app-container { max-width: 1200px; margin: 0 auto; padding: 20px; min-height: 100vh; }
+        .header { text-align: center; padding: 30px 0; margin-bottom: 30px; }
+        .logo {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 3rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: 4px;
+            animation: glow-pulse 2s ease-in-out infinite alternate;
         }
-        .log {
-            background: #f8f9fa;
-            border: 1px solid #dee2e6;
-            border-radius: 5px;
-            padding: 15px;
-            margin: 10px 0;
-            max-height: 300px;
-            overflow-y: auto;
-            font-family: monospace;
-            font-size: 12px;
+        .tagline { color: var(--text-secondary); font-size: 1.1rem; margin-top: 10px; letter-spacing: 2px; }
+        @keyframes glow-pulse {
+            from { filter: drop-shadow(0 0 10px rgba(0, 240, 255, 0.5)); }
+            to { filter: drop-shadow(0 0 20px rgba(255, 0, 170, 0.5)); }
         }
-        .controls {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 10px;
-            margin: 20px 0;
+        .status-bar {
+            display: flex; align-items: center; justify-content: center; gap: 15px;
+            padding: 15px 25px; background: var(--bg-card); border-radius: 50px;
+            margin-bottom: 30px; border: 1px solid var(--border-color);
         }
-        button {
-            background: #007bff;
-            color: white;
-            border: none;
-            padding: 10px 15px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 14px;
+        .status-indicator { width: 12px; height: 12px; border-radius: 50%; animation: pulse 2s infinite; }
+        .status-indicator.connected { background: var(--accent-green); box-shadow: 0 0 10px var(--accent-green); }
+        .status-indicator.disconnected { background: var(--accent-red); box-shadow: 0 0 10px var(--accent-red); }
+        .status-indicator.in-room { background: var(--accent-primary); box-shadow: 0 0 10px var(--accent-primary); }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .status-text { font-size: 1rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
+        .main-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 25px; margin-bottom: 30px; }
+        @media (max-width: 900px) { .main-grid { grid-template-columns: 1fr; } }
+        .card {
+            background: var(--bg-card); border-radius: 16px; padding: 25px;
+            border: 1px solid var(--border-color); transition: all 0.3s ease;
         }
-        button:hover {
-            background: #0056b3;
+        .card:hover { border-color: var(--accent-primary); box-shadow: 0 0 30px rgba(0, 240, 255, 0.1); }
+        .card-header {
+            display: flex; align-items: center; gap: 12px; margin-bottom: 20px;
+            padding-bottom: 15px; border-bottom: 1px solid var(--border-color);
         }
-        button:disabled {
-            background: #6c757d;
-            cursor: not-allowed;
+        .card-icon { font-size: 1.5rem; }
+        .card-title {
+            font-family: 'Orbitron', sans-serif; font-size: 1.1rem; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 2px; color: var(--accent-primary);
         }
-        .input-group {
-            margin: 10px 0;
-        }
+        .connect-section { grid-column: 1 / -1; }
+        .connect-form { display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end; }
+        .form-group { flex: 1; min-width: 200px; }
+        .form-label { display: block; font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
         input, select {
-            padding: 8px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            margin-right: 10px;
+            width: 100%; padding: 14px 18px; background: var(--bg-secondary);
+            border: 2px solid var(--border-color); border-radius: 10px;
+            color: var(--text-primary); font-family: 'Rajdhani', sans-serif; font-size: 1rem; transition: all 0.3s ease;
         }
-        .status {
-            padding: 10px;
-            border-radius: 5px;
-            margin: 10px 0;
+        input:focus, select:focus { outline: none; border-color: var(--accent-primary); box-shadow: 0 0 15px rgba(0, 240, 255, 0.2); }
+        input::placeholder { color: var(--text-muted); }
+        select { cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%2300f0ff' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; background-size: 18px; padding-right: 45px; }
+        select option { background: var(--bg-secondary); color: var(--text-primary); }
+        .btn {
+            padding: 14px 28px; border: none; border-radius: 10px;
+            font-family: 'Rajdhani', sans-serif; font-size: 1rem; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 1px; cursor: pointer;
+            transition: all 0.3s ease; position: relative; overflow: hidden;
         }
-        .connected { background-color: #d4edda; border: 1px solid #c3e6cb; }
-        .disconnected { background-color: #f8d7da; border: 1px solid #f5c6cb; }
-        .in-room { background-color: #d1ecf1; border: 1px solid #bee5eb; }
+        .btn::before { content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent); transition: left 0.5s ease; }
+        .btn:hover::before { left: 100%; }
+        .btn-primary { background: linear-gradient(135deg, var(--accent-primary), #0088aa); color: var(--bg-primary); box-shadow: 0 4px 15px rgba(0, 240, 255, 0.3); }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 6px 25px rgba(0, 240, 255, 0.4); }
+        .btn-secondary { background: var(--bg-secondary); color: var(--text-primary); border: 2px solid var(--border-color); }
+        .btn-secondary:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
+        .btn-success { background: linear-gradient(135deg, var(--accent-green), #00aa55); color: var(--bg-primary); box-shadow: 0 4px 15px rgba(0, 255, 136, 0.3); }
+        .btn-success:hover { transform: translateY(-2px); box-shadow: 0 6px 25px rgba(0, 255, 136, 0.4); }
+        .btn-danger { background: linear-gradient(135deg, var(--accent-red), #cc3344); color: var(--text-primary); box-shadow: 0 4px 15px rgba(255, 71, 87, 0.3); }
+        .btn-danger:hover { transform: translateY(-2px); box-shadow: 0 6px 25px rgba(255, 71, 87, 0.4); }
+        .btn-gold { background: linear-gradient(135deg, var(--accent-gold), #cc9900); color: var(--bg-primary); box-shadow: 0 4px 15px rgba(255, 215, 0, 0.3); }
+        .btn-gold:hover { transform: translateY(-2px); box-shadow: 0 6px 25px rgba(255, 215, 0, 0.4); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; }
+        .btn-group { display: flex; gap: 10px; flex-wrap: wrap; }
+        .btn-group .btn { flex: 1; min-width: 120px; }
+        .room-controls { display: flex; flex-direction: column; gap: 15px; }
+        .input-row { display: flex; gap: 10px; }
+        .input-row input, .input-row select { flex: 1; }
+        .game-actions { display: flex; flex-direction: column; gap: 15px; }
+        .bet-controls { display: flex; gap: 10px; align-items: flex-end; }
+        .bet-controls .form-group { flex: 1; }
+        .bet-controls .btn { flex-shrink: 0; }
+        .log-section { grid-column: 1 / -1; }
+        .log-container {
+            background: var(--bg-secondary); border-radius: 12px; padding: 20px;
+            max-height: 350px; overflow-y: auto; font-family: 'Courier New', monospace;
+            font-size: 0.9rem; line-height: 1.6; border: 1px solid var(--border-color);
+        }
+        .log-container::-webkit-scrollbar { width: 8px; }
+        .log-container::-webkit-scrollbar-track { background: var(--bg-primary); border-radius: 4px; }
+        .log-container::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+        .log-container::-webkit-scrollbar-thumb:hover { background: var(--accent-primary); }
+        .log-entry { padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.05); animation: fadeIn 0.3s ease; }
+        .log-entry:last-child { border-bottom: none; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+        .log-time { color: var(--text-muted); margin-right: 10px; }
+        .log-message { color: var(--text-secondary); }
+        .log-entry.error .log-message { color: var(--accent-red); }
+        .log-entry.success .log-message { color: var(--accent-green); }
+        .log-entry.info .log-message { color: var(--accent-primary); }
+        .cards-display { display: flex; justify-content: center; gap: 15px; margin: 20px 0; perspective: 1000px; }
+        .playing-card {
+            width: 70px; height: 100px; background: linear-gradient(135deg, #fff 0%, #f0f0f0 100%);
+            border-radius: 8px; display: flex; align-items: center; justify-content: center;
+            font-size: 2rem; box-shadow: 0 10px 30px rgba(0,0,0,0.3); transition: transform 0.6s ease; cursor: pointer;
+        }
+        .playing-card:hover { transform: translateY(-10px) rotateY(10deg); }
+        .playing-card.back { background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary)); }
+        .playing-card.back::after { content: ''; width: 50px; height: 70px; background: repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(255,255,255,0.1) 5px, rgba(255,255,255,0.1) 10px); border-radius: 4px; }
+        .footer { text-align: center; padding: 20px; color: var(--text-muted); font-size: 0.85rem; }
+        @media (max-width: 600px) {
+            .logo { font-size: 2rem; }
+            .connect-form { flex-direction: column; }
+            .form-group { min-width: 100%; }
+            .btn-group { flex-direction: column; }
+            .btn-group .btn { width: 100%; }
+            .input-row { flex-direction: column; }
+            .bet-controls { flex-direction: column; }
+        }
+        .slide-up { animation: slideUp 0.5s ease; }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🃏 Indian Poker Client Demo</h1>
-        
-        <div id="status" class="status disconnected">
-            Status: Disconnected
+    <div class="app-container">
+        <header class="header">
+            <h1 class="logo">&#127183; INDIAN POKER</h1>
+            <p class="tagline">Cryptographically Secure Card Gaming</p>
+        </header>
+
+        <div class="status-bar">
+            <div id="statusIndicator" class="status-indicator disconnected"></div>
+            <span id="statusText" class="status-text">Disconnected</span>
         </div>
 
-        <div class="input-group">
-            <input type="text" id="playerName" placeholder="Enter your name" value="DemoPlayer">
-            <input type="number" id="chips" placeholder="Starting chips" value="1000">
-            <button onclick="connect()">Connect to Server</button>
+        <div class="cards-display">
+            <div class="playing-card back"></div>
+            <div class="playing-card back"></div>
+            <div class="playing-card back"></div>
         </div>
 
-        <div class="controls">
-            <div>
-                <h3>Room Management</h3>
-                <input type="text" id="roomName" placeholder="Room name">
-                <select id="gameVariant">
-                    <option value="teen_patti">Teen Patti</option>
-                    <option value="jhandi_munda">Jhandi Munda</option>
-                </select>
-                <button onclick="createRoom()">Create Room</button>
-                <button onclick="listRooms()">List Rooms</button>
-                <input type="text" id="roomId" placeholder="Room ID to join">
-                <button onclick="joinRoom()">Join Room</button>
+        <div class="main-grid">
+            <div class="card connect-section slide-up">
+                <div class="card-header">
+                    <span class="card-icon">&#128274;</span>
+                    <h2 class="card-title">Connect</h2>
+                </div>
+                <div class="connect-form">
+                    <div class="form-group">
+                        <label class="form-label">Player Name</label>
+                        <input type="text" id="playerName" placeholder="Enter your name" value="Player">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Starting Chips</label>
+                        <input type="number" id="chips" placeholder="Chips" value="1000">
+                    </div>
+                    <button class="btn btn-primary" onclick="connect()">&#9889; Connect</button>
+                </div>
             </div>
 
-            <div>
-                <h3>Game Actions</h3>
-                <button onclick="startGame()">Start Game</button>
-                <button onclick="leaveRoom()">Leave Room</button>
-                <input type="number" id="betAmount" placeholder="Bet amount" value="50">
-                <button onclick="makeBet()">Make Bet</button>
-                <button onclick="fold()">Fold</button>
-                <button onclick="showCards()">Show Cards</button>
+            <div class="card slide-up" style="animation-delay: 0.1s">
+                <div class="card-header">
+                    <span class="card-icon">&#127970;</span>
+                    <h2 class="card-title">Room</h2>
+                </div>
+                <div class="room-controls">
+                    <div class="input-row">
+                        <input type="text" id="roomName" placeholder="Room name">
+                        <select id="gameVariant">
+                            <option value="teen_patti">Teen Patti</option>
+                            <option value="jhandi_munda">Jhandi Munda</option>
+                        </select>
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn btn-success" onclick="createRoom()">Create</button>
+                        <button class="btn btn-secondary" onclick="listRooms()">List Rooms</button>
+                    </div>
+                    <div class="input-row">
+                        <input type="text" id="roomId" placeholder="Room ID to join">
+                        <button class="btn btn-primary" onclick="joinRoom()">Join</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card slide-up" style="animation-delay: 0.2s">
+                <div class="card-header">
+                    <span class="card-icon">&#127918;</span>
+                    <h2 class="card-title">Game Actions</h2>
+                </div>
+                <div class="game-actions">
+                    <button class="btn btn-gold" onclick="startGame()">&#9654; Start Game</button>
+                    <div class="bet-controls">
+                        <div class="form-group">
+                            <label class="form-label">Bet Amount</label>
+                            <input type="number" id="betAmount" placeholder="Amount" value="50">
+                        </div>
+                        <button class="btn btn-success" onclick="makeBet()">Bet</button>
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn btn-danger" onclick="fold()">Fold</button>
+                        <button class="btn btn-primary" onclick="showCards()">Show Cards</button>
+                    </div>
+                    <button class="btn btn-secondary" onclick="leaveRoom()">Leave Room</button>
+                </div>
+            </div>
+
+            <div class="card log-section slide-up" style="animation-delay: 0.3s">
+                <div class="card-header">
+                    <span class="card-icon">&#128196;</span>
+                    <h2 class="card-title">Game Log</h2>
+                </div>
+                <div id="log" class="log-container"></div>
             </div>
         </div>
 
-        <h3>Server Log</h3>
-        <div id="log" class="log"></div>
+        <footer class="footer">
+            <p>Powered by Zero-Knowledge Proofs &amp; Private Information Retrieval</p>
+        </footer>
     </div>
 
     <script>
-        const WS_URL = 'wss://indian-poker-production.up.railway.app';
+        // Auto-detect WebSocket URL based on current host
+        const getWebSocketURL = () => {
+            const host = window.location.host;
+            // If running locally, connect to production server
+            if (host.includes('localhost') || host.includes('127.0.0.1') || !host) {
+                return 'wss://indian-poker-production-e8d5.up.railway.app';
+            }
+            // If running on Railway, use same host with wss
+            return 'wss://' + host;
+        };
+        const WS_URL = getWebSocketURL();
 
         class SecureMessageHandler {
             constructor() {
@@ -226,25 +376,25 @@
                 this.playerName = '';
                 this.securityHandler = new SecureMessageHandler();
                 this.securityEnabled = false;
-                this.updateStatus('Disconnected');
+                this.updateStatus('disconnected', 'Disconnected');
             }
 
             connect() {
                 const name = document.getElementById('playerName').value.trim();
                 if (!name) {
-                    this.log('Please enter your name');
+                    this.log('Please enter your name', 'error');
                     return;
                 }
 
                 this.playerName = name;
-                this.log('Connecting to server...');
+                this.log('Connecting to server...', 'info');
 
                 try {
                     this.ws = new WebSocket(WS_URL);
                     
                     this.ws.onopen = () => {
-                        this.log('Connected to Indian Poker Server');
-                        this.updateStatus('Connected');
+                        this.log('Connected to Indian Poker Server', 'success');
+                        this.updateStatus('connected', 'Connected');
                         this.initSecurity();
                     };
 
@@ -253,35 +403,35 @@
                         await this.handleMessage(message);
                     };
 
-                    this.ws.onclose = () => {
-                        this.log('Disconnected from server');
-                        this.updateStatus('Disconnected');
+                    this.ws.onclose = (event) => {
+                        this.log('Disconnected: ' + (event.reason || 'Connection closed'), 'error');
+                        this.updateStatus('disconnected', 'Disconnected');
                         this.securityEnabled = false;
                     };
 
-                    this.ws.onerror = (error) => {
-                        this.log('Connection error: ' + error);
+                    this.ws.onerror = () => {
+                        this.log('Connection error', 'error');
                     };
                 } catch (error) {
-                    this.log('Failed to connect: ' + error.message);
+                    this.log('Failed to connect: ' + error.message, 'error');
                 }
             }
 
             initSecurity() {
                 this.ws.send(JSON.stringify({ type: 'security_init' }));
-                this.log('Requesting security keys...');
+                this.log('Initializing secure connection...', 'info');
             }
 
             async handleMessage(message) {
                 if (message.type === 'encrypted_message' && message.data) {
                     const verified = await this.securityHandler.verify(message.data.encrypted, message.data.signature);
                     if (!verified) {
-                        this.log('ERROR: Message signature verification failed');
+                        this.log('Message signature verification failed', 'error');
                         return;
                     }
                     const decrypted = await this.securityHandler.decrypt(message.data.encrypted);
                     if (!decrypted) {
-                        this.log('ERROR: Failed to decrypt message');
+                        this.log('Failed to decrypt message', 'error');
                         return;
                     }
                     message = decrypted;
@@ -291,79 +441,78 @@
                     case 'security_keys':
                         await this.securityHandler.initKeys(message.data.encryptionKey, message.data.authKey);
                         this.securityEnabled = true;
-                        this.log('Security initialized: ' + message.data.algorithm);
+                        this.log('Secure connection established', 'success');
                         break;
 
                     case 'connection_established':
                         this.clientId = message.data.clientId;
-                        this.log('Connected with ID: ' + this.clientId);
-                        this.log('Welcome message: ' + message.data.message);
+                        this.log('Welcome to Indian Poker!', 'success');
                         break;
                         
                     case 'rooms_list':
-                        this.log('Available rooms:');
-                        message.data.rooms.forEach(room => {
-                            this.log('   - ' + room.name + ' (' + room.gameType + ') [' + room.playerCount + '/' + room.maxPlayers + ']');
-                        });
+                        if (message.data.rooms.length === 0) {
+                            this.log('No rooms available. Create one!', 'info');
+                        } else {
+                            this.log('Available rooms:', 'info');
+                            message.data.rooms.forEach(room => {
+                                this.log('  ' + room.name + ' (' + room.gameType + ') - ' + room.playerCount + '/' + room.maxPlayers + ' players');
+                            });
+                        }
                         break;
                         
                     case 'room_created':
                         this.roomId = message.data.room.id;
-                        this.log('Created room: ' + this.roomId);
-                        this.log('   Room: ' + message.data.room.name);
-                        this.log('   Game: ' + message.data.room.gameType);
+                        this.log('Room created: ' + message.data.room.name, 'success');
+                        this.updateStatus('in-room', 'In Room');
                         break;
                         
                     case 'room_joined':
                         this.roomId = message.data.room.id;
-                        this.log('Joined room: ' + this.roomId);
-                        this.log('   Room: ' + message.data.room.name);
-                        this.log('   Game: ' + message.data.room.gameType);
-                        this.updateStatus('In Room');
+                        this.log('Joined room: ' + message.data.room.name, 'success');
+                        this.updateStatus('in-room', 'In Room');
                         break;
                         
                     case 'player_joined':
-                        this.log('Player joined: ' + message.data.player.name);
+                        this.log(message.data.player.name + ' joined the room', 'info');
                         break;
                         
                     case 'game_started':
-                        this.log('Game started!');
-                        this.log('   ' + message.data.message);
+                        this.log('Game started! ' + message.data.message, 'success');
                         break;
                         
                     case 'bet_made':
-                        this.log(message.data.playerName + ' bet ' + message.data.amount);
+                        this.log(message.data.playerName + ' bet ' + message.data.amount + ' chips', 'info');
                         break;
                         
                     case 'cards_shown':
-                        this.log(message.data.playerName + ' showed: ' + message.data.handValue.name);
-                        this.log('   Cards: ' + message.data.cards.join(', '));
+                        this.log(message.data.playerName + ' shows: ' + message.data.handValue.name, 'success');
+                        this.log('Cards: ' + message.data.cards.join(', '));
                         break;
                         
                     case 'player_folded':
-                        this.log(message.data.playerName + ' folded');
+                        this.log(message.data.playerName + ' folded', 'info');
                         break;
                         
                     case 'game_ended':
-                        this.log('Game ended: ' + message.data.message);
+                        this.log('Game Over: ' + message.data.message, 'success');
                         if (message.data.winningHand) {
-                            this.log('   Winning hand: ' + message.data.winningHand.name);
+                            this.log('Winning hand: ' + message.data.winningHand.name);
                         }
                         break;
                         
                     case 'error':
-                        this.log('ERROR: ' + message.data.message);
+                        this.log(message.data.message, 'error');
                         break;
 
                     case 'security_required':
-                        this.log('SECURITY: ' + message.data.message);
+                        this.log(message.data.message, 'info');
                         if (!this.securityEnabled) {
                             this.initSecurity();
                         }
                         break;
                         
                     default:
-                        this.log('Unknown message: ' + JSON.stringify(message));
+                        this.log('Server: ' + JSON.stringify(message));
                 }
             }
 
@@ -376,27 +525,27 @@
                             type: 'encrypted_message',
                             data: { encrypted: encrypted, signature: signature }
                         }));
-                        this.log('Sent (encrypted): ' + message.type);
                     } else {
                         this.ws.send(JSON.stringify(message));
-                        this.log('Sent: ' + message.type);
                     }
                 } else {
-                    this.log('Not connected to server');
+                    this.log('Not connected to server', 'error');
                 }
             }
 
-            updateStatus(status) {
-                const statusDiv = document.getElementById('status');
-                statusDiv.textContent = 'Status: ' + status;
-                statusDiv.className = 'status ' + status.toLowerCase().replace(' ', '-');
+            updateStatus(state, text) {
+                const indicator = document.getElementById('statusIndicator');
+                const statusText = document.getElementById('statusText');
+                indicator.className = 'status-indicator ' + state;
+                statusText.textContent = text || state;
             }
 
-            log(message) {
+            log(message, type = '') {
                 const logDiv = document.getElementById('log');
                 const time = new Date().toLocaleTimeString();
                 const entry = document.createElement('div');
-                entry.textContent = '[' + time + '] ' + message;
+                entry.className = 'log-entry ' + type;
+                entry.innerHTML = '<span class="log-time">[' + time + ']</span><span class="log-message">' + message + '</span>';
                 logDiv.appendChild(entry);
                 logDiv.scrollTop = logDiv.scrollHeight;
             }
@@ -430,7 +579,7 @@
 
             leaveRoom() {
                 this.send({ type: 'leave_room' });
-                this.updateStatus('Connected');
+                this.updateStatus('connected', 'Connected');
             }
 
             startGame() {
@@ -466,12 +615,9 @@
         function fold() { client.fold(); }
         function showCards() { client.showCards(); }
 
-        setTimeout(() => {
-            if (!client.ws || client.ws.readyState !== WebSocket.OPEN) {
-                client.log('Auto-connecting for demo...');
-                client.connect();
-            }
-        }, 1000);
+        // Welcome messages
+        client.log('Welcome to Indian Poker!', 'success');
+        client.log('Enter your name and click Connect to start playing.', 'info');
     </script>
 </body>
 </html>
