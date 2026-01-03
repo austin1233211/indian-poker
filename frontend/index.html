@@ -7,7 +7,7 @@
     <meta http-equiv="Content-Security-Policy" content="
         default-src 'self';
         script-src 'self' 'unsafe-inline';
-        style-src 'self' 'unsafe-inline';
+        style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
         connect-src 'self' ws: wss: http: https:;
         img-src 'self' data:;
         font-src 'self' https://fonts.gstatic.com https://fonts.googleapis.com;
@@ -272,15 +272,26 @@
     </div>
 
     <script>
-        // Auto-detect WebSocket URL based on current host
+        // WebSocket server URL - the poker server is on a separate Railway service
+        // Frontend is served from indian-poker-production-e8d5.up.railway.app
+        // WebSocket server is at indian-poker-production.up.railway.app
+        const POKER_SERVER_URL = 'wss://indian-poker-production.up.railway.app';
+        
         const getWebSocketURL = () => {
-            const host = window.location.host;
-            // If running locally, connect to production server
-            if (host.includes('localhost') || host.includes('127.0.0.1') || !host) {
-                return 'wss://indian-poker-production-e8d5.up.railway.app';
+            // Check for URL parameter override (useful for testing)
+            const urlParams = new URLSearchParams(window.location.search);
+            const wsOverride = urlParams.get('ws');
+            if (wsOverride) {
+                return wsOverride;
             }
-            // If running on Railway, use same host with wss
-            return 'wss://' + host;
+            
+            const host = window.location.host;
+            // If running locally, connect to production poker server
+            if (host.includes('localhost') || host.includes('127.0.0.1') || !host) {
+                return POKER_SERVER_URL;
+            }
+            // On Railway, always connect to the poker server (separate service)
+            return POKER_SERVER_URL;
         };
         const WS_URL = getWebSocketURL();
 
