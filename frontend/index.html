@@ -325,35 +325,64 @@
                 return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
             }
 
+            base64ToBytes(base64) {
+                const binary = atob(base64);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) {
+                    bytes[i] = binary.charCodeAt(i);
+                }
+                return bytes;
+            }
+
+            bytesToBase64(bytes) {
+                let binary = '';
+                for (let i = 0; i < bytes.length; i++) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                return btoa(binary);
+            }
+
             async encrypt(message) {
                 if (!this.encryptionKey) return null;
                 const iv = window.crypto.getRandomValues(new Uint8Array(12));
+                const sequence = ++this.sequence;
+                const timestamp = Date.now();
                 const payload = JSON.stringify({
-                    ...message,
-                    seq: ++this.sequence,
-                    ts: Date.now()
+                    message: message,
+                    sequence: sequence,
+                    timestamp: timestamp
                 });
                 const encoded = new TextEncoder().encode(payload);
-                const ciphertext = await window.crypto.subtle.encrypt(
+                const encryptedBuffer = await window.crypto.subtle.encrypt(
                     { name: 'AES-GCM', iv: iv }, this.encryptionKey, encoded
                 );
+                const encryptedBytes = new Uint8Array(encryptedBuffer);
+                const ciphertext = encryptedBytes.slice(0, encryptedBytes.length - 16);
+                const authTag = encryptedBytes.slice(encryptedBytes.length - 16);
                 return {
-                    iv: this.bytesToHex(iv),
-                    ciphertext: this.bytesToHex(new Uint8Array(ciphertext)),
-                    sequence: this.sequence,
-                    timestamp: Date.now()
+                    encrypted: true,
+                    ciphertext: this.bytesToBase64(ciphertext),
+                    iv: this.bytesToBase64(iv),
+                    authTag: this.bytesToBase64(authTag),
+                    sequence: sequence,
+                    timestamp: timestamp
                 };
             }
 
             async decrypt(encryptedData) {
                 if (!this.encryptionKey) return null;
                 try {
-                    const iv = this.hexToBytes(encryptedData.iv);
-                    const ciphertext = this.hexToBytes(encryptedData.ciphertext);
+                    const iv = this.base64ToBytes(encryptedData.iv);
+                    const ciphertext = this.base64ToBytes(encryptedData.ciphertext);
+                    const authTag = this.base64ToBytes(encryptedData.authTag);
+                    const combined = new Uint8Array(ciphertext.length + authTag.length);
+                    combined.set(ciphertext);
+                    combined.set(authTag, ciphertext.length);
                     const decrypted = await window.crypto.subtle.decrypt(
-                        { name: 'AES-GCM', iv: iv }, this.encryptionKey, ciphertext
+                        { name: 'AES-GCM', iv: iv }, this.encryptionKey, combined
                     );
-                    return JSON.parse(new TextDecoder().decode(decrypted));
+                    const parsed = JSON.parse(new TextDecoder().decode(decrypted));
+                    return parsed.message || parsed;
                 } catch (e) {
                     console.error('Decryption failed:', e);
                     return null;
@@ -369,9 +398,14 @@
 
             async verify(data, signatureHex) {
                 if (!this.authKey) return false;
-                const encoded = new TextEncoder().encode(JSON.stringify(data));
-                const signature = this.hexToBytes(signatureHex);
-                return await window.crypto.subtle.verify('HMAC', this.authKey, signature, encoded);
+                try {
+                    const encoded = new TextEncoder().encode(JSON.stringify(data));
+                    const signature = this.hexToBytes(signatureHex);
+                    return await window.crypto.subtle.verify('HMAC', this.authKey, signature, encoded);
+                } catch (e) {
+                    console.error('Signature verification failed:', e);
+                    return false;
+                }
             }
 
             isReady() {
