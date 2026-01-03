@@ -675,7 +675,7 @@ class WSSEnforcer {
             }
         }
 
-        return { allowed: true };
+        return { allowed: true, warnings: [] };
     }
 
     /**
