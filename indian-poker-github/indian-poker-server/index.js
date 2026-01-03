@@ -1263,8 +1263,16 @@ class IndianPokerServer {
         });
 
         // Enhanced Origin Validation - strict origin header validation
+        // Parse ALLOWED_ORIGINS with trimming and trailing slash removal for robustness
+        const parseAllowedOrigins = (originsStr) => {
+            if (!originsStr) return [];
+            return originsStr.split(',')
+                .map(origin => origin.trim())
+                .filter(origin => origin.length > 0)
+                .map(origin => origin.replace(/\/+$/, '')); // Remove trailing slashes
+        };
         this.originValidator = new OriginValidator({
-            allowedOrigins: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [],
+            allowedOrigins: parseAllowedOrigins(process.env.ALLOWED_ORIGINS),
             allowSubdomains: process.env.ALLOW_SUBDOMAINS === 'true',
             strictMode: process.env.NODE_ENV === 'production',
             logRejections: true
