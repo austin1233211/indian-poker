@@ -1250,7 +1250,12 @@ class IndianPokerServer {
         this.clientSecurityEnabled = new Map();
 
         // New Security Enhancements
-        // Perfect Forward Secrecy - key rotation with ephemeral keys
+        // Perfect Forward Secrecy - key rotation tracking with ephemeral keys
+        // NOTE: Currently this class tracks message counts and generates rotation events,
+        // but the session keys are NOT yet wired into the actual message encryption.
+        // The existing MessageEncryption class handles encryption separately.
+        // To enable true PFS, the encryption handshake would need to use
+        // perfectForwardSecrecy.getSessionKey() for key derivation.
         this.perfectForwardSecrecy = new PerfectForwardSecrecy({
             keyRotationInterval: 300000, // 5 minutes
             keyRotationMessageCount: 100, // Rotate after 100 messages
@@ -1417,10 +1422,17 @@ class IndianPokerServer {
             const clientId = uuidv4();
             const connectionTime = Date.now();
             const clientIp = req.socket.remoteAddress || 'unknown';
-            const clientOrigin = req.headers.origin || 'unknown';
+            // Keep raw origin for validation (null/undefined triggers "missing origin" logic)
+            const rawOrigin = req.headers.origin;
+            // Use 'unknown' only for logging/display purposes
+            const clientOrigin = rawOrigin || 'unknown';
 
             // Security Enhancement: Origin validation (strict mode in production)
-            const originValidation = this.originValidator.validateOrigin(clientOrigin, req);
+            // Pass raw origin so validator can distinguish missing vs present origin
+            const originValidation = this.originValidator.validateOrigin(rawOrigin, {
+                ip: clientIp,
+                userAgent: req.headers['user-agent'] || 'unknown'
+            });
             if (!originValidation.allowed) {
                 console.warn('Connection rejected - invalid origin: ' + clientOrigin);
                 this.auditLogger.logConnection('ORIGIN_REJECTED', {
@@ -1455,11 +1467,8 @@ class IndianPokerServer {
             });
 
             // Security Enhancement: Register session for timeout tracking
-            this.sessionTimeoutManager.registerSession(clientId, {
-                ip: clientIp,
-                origin: clientOrigin,
-                connectionTime: connectionTime
-            });
+            // Note: registerSession only accepts clientId, metadata is stored in this.clients
+            this.sessionTimeoutManager.registerSession(clientId);
 
             this.sendMessage(clientId, {
                 type: 'connection_established',
@@ -1481,7 +1490,7 @@ class IndianPokerServer {
                         client.lastMessageTime = Date.now();
 
                         // Security Enhancement: Update session activity for timeout tracking
-                        this.sessionTimeoutManager.updateActivity(clientId);
+                        this.sessionTimeoutManager.recordActivity(clientId);
 
                         // Security Enhancement: Record message for PFS key rotation tracking
                         this.perfectForwardSecrecy.recordMessage(clientId);
@@ -1533,8 +1542,8 @@ class IndianPokerServer {
                         messageCount: client.messageCount
                     });
                 }
-                // Security Enhancement: Unregister session from timeout tracking
-                this.sessionTimeoutManager.unregisterSession(clientId);
+                // Security Enhancement: Terminate session from timeout tracking
+                this.sessionTimeoutManager.terminateSession(clientId);
                 // Security Enhancement: Clean up PFS keys for this client
                 this.perfectForwardSecrecy.cleanupClient(clientId);
                 this.handleDisconnection(clientId);
@@ -3483,14 +3492,22 @@ if (require.main === module) {
     const port = process.env.PORT || 8080;
     const server = new IndianPokerServer(port);
 
-    // Keep the process running
-    process.on('SIGINT', () => {
-        console.log('\n🛑 Shutting down Indian Poker Server...');
+    // Graceful shutdown handler
+    const gracefulShutdown = (signal) => {
+        console.log('\n🛑 Shutting down Indian Poker Server (' + signal + ')...');
+        // Clean up session timeout manager to clear interval timers
+        if (server.sessionTimeoutManager) {
+            server.sessionTimeoutManager.shutdown();
+        }
         server.wss.close(() => {
-            console.log('✅ Server closed successfully');
+            console.log('Server closed successfully');
             process.exit(0);
         });
-    });
+    };
+
+    // Handle both SIGINT (Ctrl+C) and SIGTERM (Railway/Docker)
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
     // Log deployment guide
     console.log('\n' + '='.repeat(60));

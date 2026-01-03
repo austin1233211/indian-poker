@@ -2433,19 +2433,35 @@ class OriginValidator {
             if (this.strictMode) {
                 this.logRejection('MISSING_ORIGIN', null, context);
                 return {
-                    valid: false,
+                    allowed: false,
                     reason: 'Origin header required in strict mode',
                     code: 'MISSING_ORIGIN'
                 };
             }
-            return { valid: true, warning: 'No origin header present' };
+            return { allowed: true, warning: 'No origin header present' };
         }
 
         const normalizedOrigin = origin.toLowerCase();
 
+        // If no allowed origins configured in strict mode, reject all
+        // (fail-fast should catch this at startup, but defense in depth)
+        if (this.allowedOrigins.size === 0 && this.strictMode) {
+            this.logRejection('NO_ORIGINS_CONFIGURED', normalizedOrigin, context);
+            return {
+                allowed: false,
+                reason: 'No allowed origins configured in strict mode',
+                code: 'NO_ORIGINS_CONFIGURED'
+            };
+        }
+
+        // If no allowed origins configured in non-strict mode, allow all
+        if (this.allowedOrigins.size === 0) {
+            return { allowed: true, warning: 'No origin whitelist configured, allowing all origins' };
+        }
+
         // Direct match
         if (this.allowedOrigins.has(normalizedOrigin)) {
-            return { valid: true, matchedOrigin: normalizedOrigin };
+            return { allowed: true, matchedOrigin: normalizedOrigin };
         }
 
         // Subdomain matching if enabled
@@ -2458,7 +2474,7 @@ class OriginValidator {
                     if (originUrl.protocol === allowedUrl.protocol &&
                         (originUrl.hostname === allowedUrl.hostname ||
                          originUrl.hostname.endsWith('.' + allowedUrl.hostname))) {
-                        return { valid: true, matchedOrigin: allowed, subdomain: true };
+                        return { allowed: true, matchedOrigin: allowed, subdomain: true };
                     }
                 } catch (e) {
                     // Invalid URL, skip
@@ -2469,7 +2485,7 @@ class OriginValidator {
         // No match found
         this.logRejection('ORIGIN_NOT_ALLOWED', normalizedOrigin, context);
         return {
-            valid: false,
+            allowed: false,
             reason: `Origin '${origin}' not in allowed list`,
             code: 'ORIGIN_NOT_ALLOWED'
         };
@@ -2974,11 +2990,11 @@ class InputValidator {
     /**
      * Validate a game message
      * @param {object} message - Game message
-     * @returns {object} Validation result
+     * @returns {object} Validation result with { valid, sanitized, errors }
      */
     validateGameMessage(message) {
         if (!message || typeof message !== 'object') {
-            return { valid: false, error: 'Invalid message format', sanitized: null };
+            return { valid: false, errors: ['Invalid message format'], sanitized: null };
         }
 
         const typeValidation = this.validateString(message.type, {
@@ -2987,12 +3003,23 @@ class InputValidator {
         });
 
         if (!typeValidation.valid) {
-            return { valid: false, error: 'Invalid message type', sanitized: null };
+            return { valid: false, errors: ['Invalid message type'], sanitized: null };
+        }
+
+        // Special handling for encrypted messages - DO NOT sanitize ciphertext/signature
+        // as HTML entity encoding would corrupt the base64-encoded data
+        if (message.type === 'encrypted_message') {
+            return this.validateEncryptedEnvelope(message);
+        }
+
+        // Special handling for security_init - it's plaintext and has different structure
+        if (message.type === 'security_init') {
+            return { valid: true, sanitized: message, errors: [] };
         }
 
         const dataValidation = message.data ? 
             this.validateObject(message.data) : 
-            { valid: true, sanitized: {} };
+            { valid: true, sanitized: {}, errors: [] };
 
         return {
             valid: typeValidation.valid && dataValidation.valid,
@@ -3002,6 +3029,41 @@ class InputValidator {
             },
             errors: dataValidation.errors || []
         };
+    }
+
+    /**
+     * Validate encrypted message envelope without sanitizing ciphertext
+     * Only validates structure, not content (content is encrypted)
+     * @param {object} message - Encrypted message envelope
+     * @returns {object} Validation result
+     */
+    validateEncryptedEnvelope(message) {
+        const errors = [];
+
+        if (!message.data || typeof message.data !== 'object') {
+            return { valid: false, errors: ['Encrypted message missing data field'], sanitized: null };
+        }
+
+        // Validate that encrypted and signature fields exist and are strings
+        // but DO NOT sanitize them - they contain base64-encoded crypto data
+        if (typeof message.data.encrypted !== 'string') {
+            errors.push('Missing or invalid encrypted field');
+        } else if (message.data.encrypted.length > 100000) {
+            errors.push('Encrypted data exceeds maximum length');
+        }
+
+        if (typeof message.data.signature !== 'string') {
+            errors.push('Missing or invalid signature field');
+        } else if (message.data.signature.length > 1000) {
+            errors.push('Signature exceeds maximum length');
+        }
+
+        if (errors.length > 0) {
+            return { valid: false, errors: errors, sanitized: null };
+        }
+
+        // Return original message unchanged - crypto data must not be modified
+        return { valid: true, sanitized: message, errors: [] };
     }
 }
 
