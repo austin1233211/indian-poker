@@ -31,7 +31,8 @@ describe('EncryptionService', () => {
       process.env.ENCRYPTION_SECRET = customSecret;
       const service = new EncryptionService();
       
-      expect(service.masterKey.toString()).toBe(Buffer.from(customSecret, 'utf8').toString());
+      // Master key is truncated to 32 bytes for AES-256
+      expect(service.masterKey.toString()).toBe(Buffer.from(customSecret, 'utf8').slice(0, 32).toString());
     });
   });
 
