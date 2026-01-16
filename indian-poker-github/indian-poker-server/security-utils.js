@@ -1687,25 +1687,66 @@ class AEADEncryption {
  * - Per-client encryption keys derived from game secret
  * - Sequence numbers to prevent replay attacks
  * - Timestamp validation to prevent delayed replay
+ * - SECURITY FIX: Perfect Forward Secrecy integration for ephemeral key rotation
  */
 class MessageEncryption {
-    constructor(gameSecret) {
+    constructor(gameSecret, options = {}) {
         this.gameSecret = gameSecret || crypto.randomBytes(32).toString('hex');
         this.sequenceNumbers = new Map(); // clientId -> sequence
         this.algorithm = 'aes-256-gcm';
         this.ivLength = 12; // 96 bits (recommended for GCM)
         this.tagLength = 16; // 128 bits
+        
+        // SECURITY FIX: PFS integration for ephemeral key rotation
+        this.pfsManager = options.pfsManager || null;
+        this.usePFS = options.usePFS !== false && this.pfsManager !== null;
+    }
+
+    /**
+     * SECURITY FIX: Set the PFS manager for ephemeral key rotation
+     * @param {PerfectForwardSecrecy} pfsManager - PFS manager instance
+     */
+    setPFSManager(pfsManager) {
+        this.pfsManager = pfsManager;
+        this.usePFS = pfsManager !== null;
     }
 
     /**
      * Derive a unique encryption key for a specific client
+     * SECURITY FIX: Uses PFS session key when available for forward secrecy
      * @param {string} clientId - Client identifier
+     * @param {number} keyVersion - Optional key version for decryption of old messages
      * @returns {Buffer} Derived key
      */
-    deriveClientKey(clientId) {
+    deriveClientKey(clientId, keyVersion = null) {
+        // SECURITY FIX: Use PFS session key if available
+        if (this.usePFS && this.pfsManager) {
+            const sessionKey = this.pfsManager.getSessionKey(clientId, keyVersion);
+            if (sessionKey) {
+                // Derive final key from PFS session key + client context
+                return crypto.createHmac('sha256', sessionKey)
+                    .update(`pfs_client_key_${clientId}`)
+                    .digest();
+            }
+        }
+        
+        // Fallback to static key derivation (for clients without PFS)
         return crypto.createHmac('sha256', this.gameSecret)
             .update(`client_key_${clientId}`)
             .digest();
+    }
+    
+    /**
+     * SECURITY FIX: Get current key version for a client
+     * @param {string} clientId - Client identifier
+     * @returns {number|null} Current key version or null if PFS not enabled
+     */
+    getCurrentKeyVersion(clientId) {
+        if (this.usePFS && this.pfsManager) {
+            const keyInfo = this.pfsManager.clientKeys.get(clientId);
+            return keyInfo ? keyInfo.keyVersion : null;
+        }
+        return null;
     }
 
     /**
@@ -1737,11 +1778,13 @@ class MessageEncryption {
 
     /**
      * Encrypt a message for a specific client
+     * SECURITY FIX: Includes keyVersion for PFS key rotation support
      * @param {string} clientId - Client identifier
      * @param {object} message - Message to encrypt
      * @returns {object} Encrypted message with metadata
      */
     encryptMessage(clientId, message) {
+        const keyVersion = this.getCurrentKeyVersion(clientId);
         const key = this.deriveClientKey(clientId);
         const iv = crypto.randomBytes(this.ivLength);
         const sequence = this.getNextSequence(clientId);
@@ -1763,7 +1806,7 @@ class MessageEncryption {
         ]);
         const authTag = cipher.getAuthTag();
 
-        return {
+        const result = {
             encrypted: true,
             ciphertext: encrypted.toString('base64'),
             iv: iv.toString('base64'),
@@ -1771,17 +1814,28 @@ class MessageEncryption {
             sequence: sequence,
             timestamp: timestamp
         };
+        
+        // SECURITY FIX: Include key version for PFS decryption
+        if (keyVersion !== null) {
+            result.keyVersion = keyVersion;
+            result.pfsEnabled = true;
+        }
+        
+        return result;
     }
 
     /**
      * Decrypt a message from a specific client
+     * SECURITY FIX: Uses keyVersion for PFS key rotation support
      * @param {string} clientId - Client identifier
      * @param {object} encryptedData - Encrypted message data
      * @returns {object|null} Decrypted message or null if failed
      */
     decryptMessage(clientId, encryptedData) {
         try {
-            const key = this.deriveClientKey(clientId);
+            // SECURITY FIX: Use keyVersion from message for PFS decryption
+            const keyVersion = encryptedData.keyVersion || null;
+            const key = this.deriveClientKey(clientId, keyVersion);
             const iv = Buffer.from(encryptedData.iv, 'base64');
             const authTag = Buffer.from(encryptedData.authTag, 'base64');
             const ciphertext = Buffer.from(encryptedData.ciphertext, 'base64');

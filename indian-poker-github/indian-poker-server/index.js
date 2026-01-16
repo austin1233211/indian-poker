@@ -1254,7 +1254,6 @@ class IndianPokerServer {
         this.enhancedCardHasher = new EnhancedCardHasher();
         this.aeadEncryption = new AEADEncryption();
         
-        this.messageEncryption = new MessageEncryption();
         this.messageAuthenticator = new MessageAuthenticator();
         this.anomalyDetector = new AnomalyDetector({
             maxHistorySize: 100,
@@ -1265,15 +1264,19 @@ class IndianPokerServer {
 
         // New Security Enhancements
         // Perfect Forward Secrecy - key rotation tracking with ephemeral keys
-        // NOTE: Currently this class tracks message counts and generates rotation events,
-        // but the session keys are NOT yet wired into the actual message encryption.
-        // The existing MessageEncryption class handles encryption separately.
-        // To enable true PFS, the encryption handshake would need to use
-        // perfectForwardSecrecy.getSessionKey() for key derivation.
+        // SECURITY FIX: PFS is now wired into MessageEncryption for true forward secrecy.
+        // Session keys from PFS are used for key derivation, ensuring that compromised
+        // session keys cannot decrypt past messages.
         this.perfectForwardSecrecy = new PerfectForwardSecrecy({
             keyRotationInterval: 300000, // 5 minutes
             keyRotationMessageCount: 100, // Rotate after 100 messages
             keyHistoryTTL: 60000 // Keep old keys for 1 minute during rotation
+        });
+        
+        // SECURITY FIX: Wire PFS into MessageEncryption for true forward secrecy
+        this.messageEncryption = new MessageEncryption(null, {
+            pfsManager: this.perfectForwardSecrecy,
+            usePFS: true
         });
 
         // Enhanced Origin Validation - strict origin header validation
