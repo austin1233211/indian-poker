@@ -55,6 +55,7 @@ const ZK_CONFIG = {
 };
 
 // PIR Server Configuration
+// SECURITY: In production, PIR_SERVER_PASSWORD must be set
 const PIR_CONFIG = {
     enabled: process.env.PIR_ENABLED !== 'false', // Enabled by default
     requireForHiddenCards: process.env.PIR_REQUIRE_FOR_HIDDEN_CARDS !== 'false', // Required by default
@@ -63,9 +64,22 @@ const PIR_CONFIG = {
     retryAttempts: parseInt(process.env.PIR_RETRY_ATTEMPTS) || 3,
     retryDelay: parseInt(process.env.PIR_RETRY_DELAY) || 1000,
     // Game server credentials for PIR authentication
+    // SECURITY FIX: Require credentials in production
     serverEmail: process.env.PIR_SERVER_EMAIL || 'gameserver@indianpoker.local',
     serverPassword: process.env.PIR_SERVER_PASSWORD || ''
 };
+
+// SECURITY: Validate PIR credentials in production
+if (process.env.NODE_ENV === 'production' && PIR_CONFIG.enabled) {
+    if (!process.env.PIR_SERVER_PASSWORD || process.env.PIR_SERVER_PASSWORD.length < 8) {
+        console.error('SECURITY ERROR: PIR_SERVER_PASSWORD must be set in production (min 8 characters)');
+        console.error('PIR integration will be disabled for security.');
+        PIR_CONFIG.enabled = false;
+    }
+    if (!process.env.PIR_SERVER_EMAIL) {
+        console.warn('SECURITY WARNING: Using default PIR_SERVER_EMAIL in production');
+    }
+}
 
 /**
  * PIR Client for communicating with the PIR Server
@@ -1298,14 +1312,40 @@ class IndianPokerServer {
             maxObjectDepth: 5
         });
 
+        // SECURITY FIX: Admin API key for protected endpoints
+        // In production, ADMIN_API_KEY must be set to access security endpoints
+        this.adminApiKey = process.env.ADMIN_API_KEY || null;
+        if (process.env.NODE_ENV === 'production' && !this.adminApiKey) {
+            console.warn('SECURITY WARNING: ADMIN_API_KEY not set. Security endpoints will be disabled in production.');
+        }
+
         // Create HTTP server for health checks (required for Railway deployment)
         this.httpServer = http.createServer((req, res) => {
+            // SECURITY FIX: Helper to validate admin API key
+            const isAuthorizedAdmin = () => {
+                if (!this.adminApiKey) {
+                    // In development without key, allow access
+                    return process.env.NODE_ENV !== 'production';
+                }
+                const authHeader = req.headers['authorization'] || req.headers['x-api-key'];
+                if (!authHeader) return false;
+                const providedKey = authHeader.replace('Bearer ', '').trim();
+                // Use constant-time comparison to prevent timing attacks
+                return providedKey.length === this.adminApiKey.length &&
+                       crypto.timingSafeEqual(Buffer.from(providedKey), Buffer.from(this.adminApiKey));
+            };
+
             if (req.url === '/' || req.url === '/health') {
+                // Health endpoint is public but with limited info in production
+                const isProduction = process.env.NODE_ENV === 'production';
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ 
                     status: 'ok', 
                     service: 'indian-poker-server',
-                    security: {
+                    // SECURITY FIX: Only expose detailed security config to authenticated admins
+                    security: isProduction && !isAuthorizedAdmin() ? {
+                        status: 'enabled'
+                    } : {
                         wssEnforced: this.wssEnforcer.enforceWSS,
                         encryptionMandatory: true,
                         rateLimitingEnabled: true,
@@ -1322,6 +1362,16 @@ class IndianPokerServer {
                     }
                 }));
             } else if (req.url === '/security/stats') {
+                // SECURITY FIX: Require authentication for security stats
+                if (!isAuthorizedAdmin()) {
+                    this.auditLogger.logSecurity('UNAUTHORIZED_SECURITY_STATS_ACCESS', {
+                        ip: req.socket.remoteAddress,
+                        userAgent: req.headers['user-agent']
+                    });
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized. Provide valid API key via Authorization header.' }));
+                    return;
+                }
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({
                     cryptoMonitor: this.cryptoMonitor.getStatistics(),
@@ -1329,6 +1379,16 @@ class IndianPokerServer {
                     rateLimiter: { active: true }
                 }));
             } else if (req.url === '/security/audit') {
+                // SECURITY FIX: Require authentication for audit logs
+                if (!isAuthorizedAdmin()) {
+                    this.auditLogger.logSecurity('UNAUTHORIZED_AUDIT_ACCESS', {
+                        ip: req.socket.remoteAddress,
+                        userAgent: req.headers['user-agent']
+                    });
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized. Provide valid API key via Authorization header.' }));
+                    return;
+                }
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({
                     logs: this.auditLogger.getLogs({ limit: 100 })
@@ -1413,6 +1473,15 @@ class IndianPokerServer {
     }
 
     setupWebSocketHandlers() {
+        // SECURITY FIX: IP-based rate limiting for connections
+        // Prevents attackers from opening many connections from the same IP
+        this.ipConnectionCounts = new Map(); // ip -> { count, firstConnection, lastConnection }
+        this.maxConnectionsPerIP = parseInt(process.env.MAX_CONNECTIONS_PER_IP) || 10;
+        this.ipConnectionWindow = parseInt(process.env.IP_CONNECTION_WINDOW) || 60000; // 1 minute
+        
+        // SECURITY FIX: Message size limit
+        this.maxMessageSize = parseInt(process.env.MAX_MESSAGE_SIZE) || 65536; // 64KB default
+
         this.wss.on('connection', (ws, req) => {
             // Security Enhancement: WSS enforcement check
             const securityCheck = this.wssEnforcer.checkConnection(req);
@@ -1430,6 +1499,29 @@ class IndianPokerServer {
             const clientId = uuidv4();
             const connectionTime = Date.now();
             const clientIp = req.socket.remoteAddress || 'unknown';
+
+            // SECURITY FIX: IP-based connection rate limiting
+            const ipInfo = this.ipConnectionCounts.get(clientIp) || { count: 0, firstConnection: connectionTime, lastConnection: connectionTime };
+            
+            // Reset counter if window has passed
+            if (connectionTime - ipInfo.firstConnection > this.ipConnectionWindow) {
+                ipInfo.count = 0;
+                ipInfo.firstConnection = connectionTime;
+            }
+            
+            ipInfo.count++;
+            ipInfo.lastConnection = connectionTime;
+            this.ipConnectionCounts.set(clientIp, ipInfo);
+            
+            if (ipInfo.count > this.maxConnectionsPerIP) {
+                this.auditLogger.logSecurity('IP_CONNECTION_LIMIT_EXCEEDED', {
+                    ip: clientIp,
+                    connectionCount: ipInfo.count,
+                    maxAllowed: this.maxConnectionsPerIP
+                });
+                ws.close(1008, 'Too many connections from this IP. Please wait before reconnecting.');
+                return;
+            }
             // Keep raw origin for validation (null/undefined triggers "missing origin" logic)
             const rawOrigin = req.headers.origin;
             // Use 'unknown' only for logging/display purposes
@@ -1492,6 +1584,19 @@ class IndianPokerServer {
 
             ws.on('message', (message) => {
                 try {
+                    // SECURITY FIX: Check message size before processing
+                    const messageSize = Buffer.isBuffer(message) ? message.length : Buffer.byteLength(message);
+                    if (messageSize > this.maxMessageSize) {
+                        this.auditLogger.logSecurity('MESSAGE_SIZE_EXCEEDED', {
+                            clientId,
+                            messageSize,
+                            maxAllowed: this.maxMessageSize,
+                            ip: this.clients.get(clientId)?.ip
+                        });
+                        this.sendError(clientId, `Message too large. Maximum size is ${this.maxMessageSize} bytes.`);
+                        return;
+                    }
+
                     const client = this.clients.get(clientId);
                     if (client) {
                         client.messageCount++;
@@ -1701,13 +1806,50 @@ class IndianPokerServer {
             return;
         }
 
+        // SECURITY FIX: Rate limit room creation per IP to prevent room exhaustion attacks
+        const client = this.clients.get(clientId);
+        if (client && client.ip) {
+            // Initialize room creation tracking if not exists
+            if (!this.ipRoomCreationCounts) {
+                this.ipRoomCreationCounts = new Map(); // ip -> { count, firstCreation }
+                this.maxRoomsPerIPPerHour = parseInt(process.env.MAX_ROOMS_PER_IP_PER_HOUR) || 5;
+                this.roomCreationWindow = 3600000; // 1 hour
+            }
+            
+            const now = Date.now();
+            const ipInfo = this.ipRoomCreationCounts.get(client.ip) || { count: 0, firstCreation: now };
+            
+            // Reset counter if window has passed
+            if (now - ipInfo.firstCreation > this.roomCreationWindow) {
+                ipInfo.count = 0;
+                ipInfo.firstCreation = now;
+            }
+            
+            if (ipInfo.count >= this.maxRoomsPerIPPerHour) {
+                this.auditLogger.logSecurity('ROOM_CREATION_RATE_LIMIT', {
+                    ip: client.ip,
+                    roomsCreated: ipInfo.count,
+                    maxAllowed: this.maxRoomsPerIPPerHour
+                });
+                this.sendError(clientId, 'Room creation limit reached. Please wait before creating more rooms.');
+                return;
+            }
+            
+            ipInfo.count++;
+            this.ipRoomCreationCounts.set(client.ip, ipInfo);
+        }
+
         const { roomName } = data;
 
-        // Security: Sanitize room name (prevent XSS and limit length)
+        // SECURITY FIX: Enhanced room name sanitization (prevent XSS, Unicode attacks, and limit length)
         let sanitizedRoomName = null;
         if (roomName) {
             sanitizedRoomName = String(roomName)
-                .replace(/[<>\"'&]/g, '') // Remove potentially dangerous characters
+                .normalize('NFKC') // Normalize Unicode to prevent homograph attacks
+                .replace(/[<>\"'&`\\\/\x00-\x1f\x7f-\x9f]/g, '') // Remove dangerous chars including control chars
+                .replace(/[\u2028\u2029]/g, '') // Remove line/paragraph separators (JS injection)
+                .replace(/[\uFEFF\u200B-\u200D\uFFFE\uFFFF]/g, '') // Remove zero-width and BOM chars
+                .trim()
                 .substring(0, 50); // Limit length
         }
 
@@ -1756,9 +1898,13 @@ class IndianPokerServer {
             validatedChips = Math.floor(Math.min(Math.max(chips, MIN_CHIPS), MAX_CHIPS));
         }
 
-        // Security: Sanitize player name (prevent XSS and limit length)
+        // SECURITY FIX: Enhanced player name sanitization (prevent XSS, Unicode attacks, and limit length)
         const sanitizedName = String(playerName || 'Player')
-            .replace(/[<>\"'&]/g, '') // Remove potentially dangerous characters
+            .normalize('NFKC') // Normalize Unicode to prevent homograph attacks
+            .replace(/[<>\"'&`\\\/\x00-\x1f\x7f-\x9f]/g, '') // Remove dangerous chars including control chars
+            .replace(/[\u2028\u2029]/g, '') // Remove line/paragraph separators (JS injection)
+            .replace(/[\uFEFF\u200B-\u200D\uFFFE\uFFFF]/g, '') // Remove zero-width and BOM chars
+            .trim()
             .substring(0, 20); // Limit name length
 
         try {

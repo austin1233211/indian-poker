@@ -24,11 +24,20 @@ class ConstantTimeCompare {
         const bufA = Buffer.from(a, 'utf8');
         const bufB = Buffer.from(b, 'utf8');
         
-        if (bufA.length !== bufB.length) {
-            return false;
-        }
+        // SECURITY FIX: Constant-time length comparison to prevent timing oracle
+        // Instead of early return on length mismatch (which leaks length info),
+        // we pad the shorter buffer and always perform the comparison
+        const maxLen = Math.max(bufA.length, bufB.length);
+        const paddedA = Buffer.alloc(maxLen);
+        const paddedB = Buffer.alloc(maxLen);
+        bufA.copy(paddedA);
+        bufB.copy(paddedB);
         
-        return crypto.timingSafeEqual(bufA, bufB);
+        // Always perform the comparison, but also check lengths match
+        const contentsMatch = crypto.timingSafeEqual(paddedA, paddedB);
+        const lengthsMatch = bufA.length === bufB.length;
+        
+        return contentsMatch && lengthsMatch;
     }
 
     static compareHex(a, b) {
@@ -40,11 +49,17 @@ class ConstantTimeCompare {
             const bufA = Buffer.from(a, 'hex');
             const bufB = Buffer.from(b, 'hex');
             
-            if (bufA.length !== bufB.length) {
-                return false;
-            }
+            // SECURITY FIX: Constant-time length comparison to prevent timing oracle
+            const maxLen = Math.max(bufA.length, bufB.length);
+            const paddedA = Buffer.alloc(maxLen);
+            const paddedB = Buffer.alloc(maxLen);
+            bufA.copy(paddedA);
+            bufB.copy(paddedB);
             
-            return crypto.timingSafeEqual(bufA, bufB);
+            const contentsMatch = crypto.timingSafeEqual(paddedA, paddedB);
+            const lengthsMatch = bufA.length === bufB.length;
+            
+            return contentsMatch && lengthsMatch;
         } catch (e) {
             return false;
         }
@@ -61,7 +76,7 @@ class ConstantTimeCompare {
  * is broadcast to all players before they reveal their seeds.
  */
 class DistributedRandomness {
-    constructor() {
+    constructor(options = {}) {
         this.playerCommitments = new Map(); // playerId -> commitment (hash of seed)
         this.playerReveals = new Map(); // playerId -> seed
         this.commitmentPhaseComplete = false;
@@ -70,6 +85,108 @@ class DistributedRandomness {
         this.timestamp = null;
         this.timestampCommitment = null; // SECURITY: Committed timestamp hash
         this.timestampCommitted = false; // SECURITY: Track if timestamp was committed
+        
+        // SECURITY FIX: Track abort attempts to penalize malicious players
+        this.abortedPlayers = new Map(); // playerId -> { count, lastAbort, penaltyUntil }
+        this.abortPenaltyDuration = options.abortPenaltyDuration || 300000; // 5 minutes default
+        this.maxAbortAttempts = options.maxAbortAttempts || 3; // Max aborts before longer penalty
+        this.extendedPenaltyDuration = options.extendedPenaltyDuration || 1800000; // 30 minutes for repeat offenders
+        this.revealDeadline = null; // Deadline for reveal phase
+        this.revealTimeout = options.revealTimeout || 30000; // 30 seconds to reveal
+    }
+
+    /**
+     * SECURITY FIX: Check if a player is currently penalized for abort behavior
+     * @param {string} playerId - Player identifier
+     * @returns {object} Penalty status
+     */
+    isPlayerPenalized(playerId) {
+        const penalty = this.abortedPlayers.get(playerId);
+        if (!penalty) {
+            return { penalized: false };
+        }
+        
+        const now = Date.now();
+        if (penalty.penaltyUntil > now) {
+            return {
+                penalized: true,
+                remainingTime: penalty.penaltyUntil - now,
+                abortCount: penalty.count,
+                reason: 'Player penalized for aborting randomness reveal'
+            };
+        }
+        
+        return { penalized: false, previousAborts: penalty.count };
+    }
+
+    /**
+     * SECURITY FIX: Record an abort and apply penalty
+     * @param {string} playerId - Player who aborted
+     * @returns {object} Penalty information
+     */
+    recordAbort(playerId) {
+        const existing = this.abortedPlayers.get(playerId) || { count: 0, lastAbort: 0, penaltyUntil: 0 };
+        existing.count++;
+        existing.lastAbort = Date.now();
+        
+        // Apply escalating penalties
+        const penaltyDuration = existing.count >= this.maxAbortAttempts 
+            ? this.extendedPenaltyDuration 
+            : this.abortPenaltyDuration;
+        existing.penaltyUntil = Date.now() + penaltyDuration;
+        
+        this.abortedPlayers.set(playerId, existing);
+        
+        return {
+            playerId,
+            abortCount: existing.count,
+            penaltyDuration,
+            penaltyUntil: existing.penaltyUntil,
+            isRepeatOffender: existing.count >= this.maxAbortAttempts
+        };
+    }
+
+    /**
+     * SECURITY FIX: Start reveal phase with deadline
+     * @returns {object} Reveal phase info including deadline
+     */
+    startRevealPhase() {
+        if (!this.commitmentPhaseComplete) {
+            return { success: false, error: 'Commitment phase not complete' };
+        }
+        
+        this.revealDeadline = Date.now() + this.revealTimeout;
+        return {
+            success: true,
+            deadline: this.revealDeadline,
+            timeout: this.revealTimeout,
+            expectedReveals: this.playerCommitments.size
+        };
+    }
+
+    /**
+     * SECURITY FIX: Check for players who missed reveal deadline
+     * @returns {object} List of players who aborted
+     */
+    checkRevealDeadline() {
+        if (!this.revealDeadline || Date.now() < this.revealDeadline) {
+            return { deadlinePassed: false };
+        }
+        
+        const abortedPlayers = [];
+        for (const [playerId] of this.playerCommitments) {
+            if (!this.playerReveals.has(playerId)) {
+                const penalty = this.recordAbort(playerId);
+                abortedPlayers.push({ playerId, penalty });
+            }
+        }
+        
+        return {
+            deadlinePassed: true,
+            abortedPlayers,
+            revealedCount: this.playerReveals.size,
+            expectedCount: this.playerCommitments.size
+        };
     }
 
     /**
@@ -281,6 +398,24 @@ class DistributedRandomness {
         this.timestamp = null;
         this.timestampCommitment = null;
         this.timestampCommitted = false;
+        // SECURITY FIX: Reset reveal deadline but preserve abort history
+        this.revealDeadline = null;
+        // Note: abortedPlayers is NOT reset - penalties persist across games
+    }
+
+    /**
+     * SECURITY FIX: Clear all abort penalties (admin function)
+     */
+    clearAllPenalties() {
+        this.abortedPlayers.clear();
+    }
+
+    /**
+     * SECURITY FIX: Clear penalty for a specific player (admin function)
+     * @param {string} playerId - Player to clear penalty for
+     */
+    clearPlayerPenalty(playerId) {
+        this.abortedPlayers.delete(playerId);
     }
 }
 
@@ -1351,12 +1486,15 @@ class AEADEncryption {
         }
         
         // Priority 3: Generate ephemeral key (development only)
+        // SECURITY FIX: Fail-fast in production if no master key is set
         if (process.env.NODE_ENV === 'production') {
-            console.error('SECURITY WARNING: No AEAD_MASTER_KEY set in production!');
-            console.error('Encrypted data will be lost on server restart.');
-            console.error('Set AEAD_MASTER_KEY environment variable for persistent encryption.');
+            console.error('SECURITY ERROR: AEAD_MASTER_KEY must be set in production!');
+            console.error('Encrypted data will be lost on server restart without a persistent key.');
+            console.error('Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+            throw new Error('AEAD_MASTER_KEY required in production environment');
         }
         
+        console.warn('SECURITY WARNING: Using ephemeral AEAD key (development mode only)');
         return this.generateMasterKey();
     }
 
