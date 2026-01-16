@@ -624,3 +624,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 **PIR Server** - Secure Private Information Retrieval for Modern Applications
+
+<!-- Last deployment trigger: 2026-01-16 -->
