@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GamerStake + Indian Poker Security POC - Test Client</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            color: #00d4ff;
+        }
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 30px;
+        }
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .card h2 {
+            color: #00d4ff;
+            margin-bottom: 15px;
+            font-size: 1.2rem;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #aaa;
+        }
+        input, button {
+            width: 100%;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            font-size: 1rem;
+        }
+        input:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        button {
+            background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%);
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            transition: transform 0.2s, opacity 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            opacity: 0.9;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ff4444;
+        }
+        .status-dot.connected {
+            background: #44ff44;
+        }
+        .log {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 15px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 0.85rem;
+        }
+        .log-entry {
+            padding: 5px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        .log-entry.error {
+            color: #ff6b6b;
+        }
+        .log-entry.success {
+            color: #51cf66;
+        }
+        .log-entry.info {
+            color: #74c0fc;
+        }
+        .log-entry.security {
+            color: #ffd43b;
+        }
+        .game-card {
+            display: inline-block;
+            background: #fff;
+            color: #000;
+            padding: 20px 30px;
+            border-radius: 8px;
+            font-size: 2rem;
+            font-weight: bold;
+            margin: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }
+        .game-card.hearts, .game-card.diamonds {
+            color: #e03131;
+        }
+        .game-card.clubs, .game-card.spades {
+            color: #000;
+        }
+        .result {
+            text-align: center;
+            padding: 20px;
+        }
+        .result.winner {
+            background: linear-gradient(135deg, rgba(81, 207, 102, 0.2) 0%, rgba(55, 178, 77, 0.2) 100%);
+            border: 2px solid #51cf66;
+        }
+        .result.loser {
+            background: linear-gradient(135deg, rgba(255, 107, 107, 0.2) 0%, rgba(224, 49, 49, 0.2) 100%);
+            border: 2px solid #ff6b6b;
+        }
+        .security-badge {
+            display: inline-block;
+            background: rgba(255, 212, 59, 0.2);
+            color: #ffd43b;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            margin: 2px;
+        }
+        .verification-data {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 15px;
+            font-family: monospace;
+            font-size: 0.8rem;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>GamerStake + Indian Poker Security POC</h1>
+        <p class="subtitle">Demonstrating SDK integration with cryptographic fairness</p>
+
+        <!-- Connection Card -->
+        <div class="card" id="connectionCard">
+            <h2>Connection</h2>
+            <div class="status">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Disconnected</span>
+            </div>
+            <div class="form-group">
+                <label>Server URL</label>
+                <input type="text" id="serverUrl" value="http://localhost:3000">
+            </div>
+            <div class="form-group">
+                <label>Match ID</label>
+                <input type="text" id="matchId" value="test-match-001">
+            </div>
+            <button id="connectBtn" onclick="connect()">Connect & Authenticate</button>
+        </div>
+
+        <!-- Game Card -->
+        <div class="card hidden" id="gameCard">
+            <h2>Game Status</h2>
+            <div id="gameStatus">Waiting for players...</div>
+            <div id="securityFeatures" class="hidden" style="margin-top: 15px;">
+                <strong>Security Features Active:</strong>
+                <div id="featuresList"></div>
+            </div>
+        </div>
+
+        <!-- Randomness Card -->
+        <div class="card hidden" id="randomnessCard">
+            <h2>Distributed Randomness Protocol</h2>
+            <p style="color: #888; margin-bottom: 15px;">
+                Both players contribute randomness to ensure fair shuffling.
+                No single party can control the outcome.
+            </p>
+            <div id="randomnessPhase">
+                <div class="form-group">
+                    <label>Your Random Seed (auto-generated)</label>
+                    <input type="text" id="randomSeed" readonly>
+                </div>
+                <div class="form-group">
+                    <label>Commitment (SHA-256 hash of seed)</label>
+                    <input type="text" id="commitment" readonly>
+                </div>
+                <button id="commitBtn" onclick="commitRandomness()">Send Commitment</button>
+                <button id="revealBtn" onclick="revealRandomness()" class="hidden" style="margin-top: 10px;">Reveal Seed</button>
+            </div>
+        </div>
+
+        <!-- Result Card -->
+        <div class="card hidden" id="resultCard">
+            <h2>Game Result</h2>
+            <div id="resultContent" class="result"></div>
+            <button onclick="requestVerification()" style="margin-top: 15px;">View Verification Data</button>
+        </div>
+
+        <!-- Verification Card -->
+        <div class="card hidden" id="verificationCard">
+            <h2>Fairness Verification</h2>
+            <p style="color: #888; margin-bottom: 15px;">
+                Cryptographic proof that the game was fair. You can independently verify:
+            </p>
+            <div id="verificationContent" class="verification-data"></div>
+        </div>
+
+        <!-- Log Card -->
+        <div class="card">
+            <h2>Event Log</h2>
+            <div class="log" id="log"></div>
+        </div>
+    </div>
+
+    <script>
+        let socket = null;
+        let playerId = null;
+        let randomSeed = null;
+        let commitment = null;
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logDiv.insertBefore(entry, logDiv.firstChild);
+        }
+
+        function generateRandomSeed() {
+            const array = new Uint8Array(32);
+            crypto.getRandomValues(array);
+            return Array.from(array).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        async function sha256(message) {
+            const msgBuffer = new TextEncoder().encode(message);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        function connect() {
+            const serverUrl = document.getElementById('serverUrl').value;
+            const matchId = document.getElementById('matchId').value;
+
+            log(`Connecting to ${serverUrl}...`);
+
+            socket = io(serverUrl);
+
+            socket.on('connect', () => {
+                log('Socket connected', 'success');
+                document.getElementById('statusDot').classList.add('connected');
+                document.getElementById('statusText').textContent = 'Connected';
+
+                // Authenticate with a mock token (in production, this comes from GamerStake)
+                const mockToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IlRlc3QgUGxheWVyIiwiaWF0IjoxNTE2MjM5MDIyfQ.mock';
+                
+                socket.emit('authenticate', { token: mockToken, matchId });
+                log('Authenticating...', 'info');
+            });
+
+            socket.on('authenticated', (data) => {
+                playerId = data.playerId;
+                log(`Authenticated as ${data.username} (${data.playerId})`, 'success');
+                
+                document.getElementById('gameCard').classList.remove('hidden');
+                document.getElementById('gameStatus').textContent = `Authenticated! Waiting for opponent...`;
+                
+                // Show security features
+                if (data.securityFeatures) {
+                    document.getElementById('securityFeatures').classList.remove('hidden');
+                    document.getElementById('featuresList').innerHTML = data.securityFeatures
+                        .map(f => `<span class="security-badge">${f}</span>`)
+                        .join(' ');
+                    log(`Security features: ${data.securityFeatures.join(', ')}`, 'security');
+                }
+            });
+
+            socket.on('auth_error', (data) => {
+                log(`Authentication failed: ${data.message}`, 'error');
+            });
+
+            socket.on('match_started', async (data) => {
+                log(`Match started with ${data.players.length} players`, 'success');
+                document.getElementById('gameStatus').textContent = 'Match started! Beginning randomness protocol...';
+                
+                // Generate random seed for distributed randomness
+                randomSeed = generateRandomSeed();
+                commitment = await sha256(randomSeed);
+                
+                document.getElementById('randomSeed').value = randomSeed;
+                document.getElementById('commitment').value = commitment;
+                document.getElementById('randomnessCard').classList.remove('hidden');
+                
+                log('Generated random seed for distributed randomness', 'security');
+            });
+
+            socket.on('commitment_accepted', () => {
+                log('Your commitment was accepted', 'success');
+                document.getElementById('commitBtn').disabled = true;
+                document.getElementById('commitBtn').textContent = 'Committed';
+            });
+
+            socket.on('player_committed', (data) => {
+                log(`Player ${data.playerId} committed their randomness`, 'info');
+            });
+
+            socket.on('reveal_phase', (data) => {
+                log('All players committed! Entering reveal phase...', 'security');
+                log(`Server timestamp commitment: ${data.timestampCommitment.timestampCommitment.substring(0, 16)}...`, 'security');
+                document.getElementById('gameStatus').textContent = 'Reveal phase - reveal your seed to prove commitment';
+                document.getElementById('revealBtn').classList.remove('hidden');
+            });
+
+            socket.on('reveal_accepted', () => {
+                log('Your seed was verified and accepted', 'success');
+                document.getElementById('revealBtn').disabled = true;
+                document.getElementById('revealBtn').textContent = 'Revealed';
+                document.getElementById('gameStatus').textContent = 'Seed revealed! Waiting for other players...';
+            });
+
+            socket.on('reveal_error', (data) => {
+                log(`Reveal failed: ${data.error}`, 'error');
+            });
+
+            socket.on('match_ended', (data) => {
+                log('Match ended!', 'success');
+                
+                const resultCard = document.getElementById('resultCard');
+                const resultContent = document.getElementById('resultContent');
+                resultCard.classList.remove('hidden');
+                
+                const cardSuit = data.yourCard.split(' of ')[1].toLowerCase();
+                
+                resultContent.className = `result ${data.won ? 'winner' : 'loser'}`;
+                resultContent.innerHTML = `
+                    <h3>${data.won ? 'YOU WON!' : 'You Lost'}</h3>
+                    <p>Your Card:</p>
+                    <div class="game-card ${cardSuit}">${data.yourCard}</div>
+                    <p style="margin-top: 15px;">All Cards:</p>
+                    ${data.allCards.map(c => `
+                        <div style="margin: 5px 0;">
+                            <strong>${c.username}:</strong> ${c.card} (value: ${c.value})
+                        </div>
+                    `).join('')}
+                    <p style="margin-top: 15px; color: #888;">
+                        <span class="security-badge">Shuffle Seed: ${data.securityProof.shuffleSeed}</span>
+                        <span class="security-badge">Deck Commitment: ${data.securityProof.deckCommitment}</span>
+                    </p>
+                `;
+
+                log(`Your card: ${data.yourCard}`, 'info');
+                log(`Winners: ${data.winners.join(', ')}`, data.won ? 'success' : 'info');
+            });
+
+            socket.on('verification_data', (data) => {
+                log('Received verification data', 'security');
+                document.getElementById('verificationCard').classList.remove('hidden');
+                document.getElementById('verificationContent').textContent = JSON.stringify(data, null, 2);
+            });
+
+            socket.on('match_error', (data) => {
+                log(`Match error: ${data.message}`, 'error');
+                if (data.refunded) {
+                    log('Wagers have been refunded', 'info');
+                }
+            });
+
+            socket.on('game_error', (data) => {
+                log(`Game error: ${data.message}`, 'error');
+            });
+
+            socket.on('disconnect', () => {
+                log('Disconnected from server', 'error');
+                document.getElementById('statusDot').classList.remove('connected');
+                document.getElementById('statusText').textContent = 'Disconnected';
+            });
+        }
+
+        function commitRandomness() {
+            if (!socket || !commitment) {
+                log('Not ready to commit', 'error');
+                return;
+            }
+            
+            socket.emit('commit_randomness', { commitment });
+            log(`Sending commitment: ${commitment.substring(0, 16)}...`, 'security');
+        }
+
+        function revealRandomness() {
+            if (!socket || !randomSeed) {
+                log('Not ready to reveal', 'error');
+                return;
+            }
+            
+            socket.emit('reveal_randomness', { seed: randomSeed });
+            log(`Revealing seed: ${randomSeed.substring(0, 16)}...`, 'security');
+        }
+
+        function requestVerification() {
+            if (!socket) {
+                log('Not connected', 'error');
+                return;
+            }
+            
+            socket.emit('get_verification');
+            log('Requesting verification data...', 'info');
+        }
+    </script>
+</body>
+</html>
