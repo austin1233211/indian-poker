@@ -666,6 +666,12 @@ class TeenPattiGame {
         this.currentBet = this.bootAmount;
         this.dealer = null;
 
+        // Betting turn tracking for proper Indian Poker flow
+        this.playerOrder = [];          // Array of player IDs in turn order
+        this.currentTurnIndex = 0;      // Index into playerOrder
+        this.playersActedThisRound = new Set(); // Track who has acted in current betting round
+        this.lastRaiserIndex = -1;      // Index of the last player who raised
+
         // SNARK proof tracking
         this.gameId = `${roomId}-${Date.now()}`; // Unique game identifier
         this.proofs = {
@@ -1073,6 +1079,42 @@ class TeenPattiGame {
      * Each player sees OTHER players' cards but NOT their own card
      * This is the core mechanic of Indian Poker / Blind Man's Bluff
      */
+    initBettingRound() {
+        this.playerOrder = Array.from(this.players.keys());
+        this.currentTurnIndex = 0;
+        this.playersActedThisRound = new Set();
+        this.lastRaiserIndex = -1;
+        this.currentRound = 'betting';
+    }
+
+    getCurrentTurnPlayerId() {
+        if (this.playerOrder.length === 0) return null;
+        return this.playerOrder[this.currentTurnIndex % this.playerOrder.length];
+    }
+
+    advanceTurn() {
+        const numPlayers = this.playerOrder.length;
+        let attempts = 0;
+        do {
+            this.currentTurnIndex = (this.currentTurnIndex + 1) % numPlayers;
+            attempts++;
+        } while (
+            attempts < numPlayers &&
+            this.players.get(this.playerOrder[this.currentTurnIndex]).hasFolded
+        );
+    }
+
+    isBettingComplete() {
+        const activePlayers = Array.from(this.players.values()).filter(p => !p.hasFolded);
+        if (activePlayers.length <= 1) return true;
+        // All active players must have acted at least once
+        const allActed = activePlayers.every(p => this.playersActedThisRound.has(p.id));
+        if (!allActed) return false;
+        // All active players must have equal bets
+        const bets = activePlayers.map(p => p.bet);
+        return bets.every(b => b === bets[0]);
+    }
+
     getGameStateForClient(clientId) {
         return {
             roomId: this.roomId,
@@ -1080,6 +1122,7 @@ class TeenPattiGame {
             pot: this.pot,
             currentBet: this.currentBet,
             currentRound: this.currentRound,
+            currentTurnPlayerId: this.getCurrentTurnPlayerId(),
             playerCount: this.players.size,
             players: Array.from(this.players.values()).map(p => {
                 const playerData = {
@@ -2116,8 +2159,8 @@ class IndianPokerServer {
         // Step 3: Deal cards using seat indices for verifiable dealing
         // Player with seatIndex N receives card at index N from committed deck
         this.dealCardsWithVerifiableOrder(room.game);
-        room.game.currentRound = 'betting';
         room.game.currentBet = room.game.bootAmount;
+        room.game.initBettingRound();
 
         // Get deck state after dealing
         const deckStateAfter = room.game.deck.getProofState();
@@ -2356,6 +2399,12 @@ class IndianPokerServer {
             return;
         }
 
+        // Turn enforcement: Only the current turn player can bet
+        if (room.game.getCurrentTurnPlayerId() !== clientId) {
+            this.sendError(clientId, 'It is not your turn to bet');
+            return;
+        }
+
         // ZK Proof Enforcement: Block betting until proofs are ready when required
         const proofCheck = this.canGameProceed(room.game);
         if (!proofCheck.canProceed) {
@@ -2378,9 +2427,14 @@ class IndianPokerServer {
         // Security: Ensure amount is an integer (no fractional chips)
         const betAmount = Math.floor(amount);
 
-        // Security: Enforce minimum bet (must match or exceed current bet)
-        if (betAmount < room.game.currentBet && betAmount !== player.chips) {
-            this.sendError(clientId, `Minimum bet is ${room.game.currentBet} (or all-in)`);
+        // Calculate the amount needed to call (match the highest bet)
+        const maxBet = Math.max(...Array.from(room.game.players.values()).map(p => p.bet));
+        const callAmount = maxBet - player.bet;
+
+        // For a call, the total bet placed must at least match the current highest bet
+        // For a raise, the total bet placed must exceed the current highest bet
+        if (betAmount < callAmount && betAmount !== player.chips) {
+            this.sendError(clientId, `Minimum bet is ${callAmount} to call (or all-in)`);
             return;
         }
 
@@ -2389,23 +2443,48 @@ class IndianPokerServer {
             return;
         }
 
+        const isRaise = betAmount > callAmount;
+
         player.chips -= betAmount;
         player.bet += betAmount;
         room.game.pot += betAmount;
 
-        // Update current bet if this bet is higher
-        if (betAmount > room.game.currentBet) {
-            room.game.currentBet = betAmount;
+        // Update current bet if this is a raise
+        if (player.bet > room.game.currentBet) {
+            room.game.currentBet = player.bet;
         }
+
+        // Track that this player has acted
+        room.game.playersActedThisRound.add(clientId);
+
+        // If this is a raise, reset acted set so other players must respond
+        if (isRaise) {
+            room.game.playersActedThisRound = new Set([clientId]);
+        }
+
+        const actionType = isRaise ? 'raised to' : 'called';
 
         // Indian Poker: Send personalized game state to each player
         this.broadcastPersonalizedGameState(room, 'bet_made', {
             playerId: clientId,
             playerName: player.name,
-            amount: betAmount
+            amount: betAmount,
+            action: isRaise ? 'raise' : 'call'
         });
 
-        console.log(`💰 ${player.name} bet ${betAmount} in room ${room.id}`);
+        console.log(`💰 ${player.name} ${actionType} ${player.bet} in room ${room.id}`);
+
+        // Check if betting round is complete (all active players have matched bets)
+        if (room.game.isBettingComplete()) {
+            this.triggerShowdown(room);
+        } else {
+            // Advance to next player's turn
+            room.game.advanceTurn();
+            // Broadcast updated turn info
+            this.broadcastPersonalizedGameState(room, 'turn_changed', {
+                currentTurnPlayerId: room.game.getCurrentTurnPlayerId()
+            });
+        }
     }
 
     handleFold(clientId) {
@@ -2420,6 +2499,12 @@ class IndianPokerServer {
         // Security: Only allow folding during the betting phase
         if (room.game.currentRound !== 'betting') {
             this.sendError(clientId, 'Folding is only allowed during the betting phase');
+            return;
+        }
+
+        // Turn enforcement: Only the current turn player can fold
+        if (room.game.getCurrentTurnPlayerId() !== clientId) {
+            this.sendError(clientId, 'It is not your turn');
             return;
         }
 
@@ -2444,8 +2529,71 @@ class IndianPokerServer {
             playerName: player.name
         });
 
-        // Check if game should end
-        this.checkGameEnd(room);
+        // Check if game should end (only 1 active player left = win by default)
+        const activePlayers = Array.from(room.game.players.values()).filter(p => !p.hasFolded);
+        if (activePlayers.length <= 1) {
+            this.checkGameEnd(room);
+        } else {
+            // Advance to next player's turn
+            room.game.advanceTurn();
+            this.broadcastPersonalizedGameState(room, 'turn_changed', {
+                currentTurnPlayerId: room.game.getCurrentTurnPlayerId()
+            });
+        }
+    }
+
+    triggerShowdown(room) {
+        room.game.currentRound = 'showdown';
+        const result = room.game.processBettingRound();
+        if (!result) return;
+
+        const deckReveal = room.game.getDeckReveal();
+        const proofs = room.game.getProofs();
+
+        let verificationTranscript = null;
+        if (room.game.useDistributedRandomness && room.game.deck.isVerifiableShuffle) {
+            verificationTranscript = room.game.generateVerificationTranscript();
+        }
+
+        this.broadcastToRoom(room.id, null, {
+            type: 'game_ended',
+            data: {
+                winner: {
+                    id: result.winner.id,
+                    name: result.winner.name
+                },
+                winningHand: result.handValue,
+                allHands: result.allHands,
+                pot: room.game.pot,
+                message: `🏆 ${result.winner.name} wins with ${result.handValue.name}!`,
+                deckReveal: deckReveal,
+                verificationTranscript: verificationTranscript
+            }
+        });
+
+        if (proofs && (proofs.shuffleProof || proofs.dealingProof)) {
+            this.broadcastToRoom(room.id, null, {
+                type: 'zk_proof_deal',
+                data: {
+                    gameId: room.game.gameId,
+                    proofs: {
+                        shuffle: proofs.shuffleProof || null,
+                        dealing: proofs.dealingProof || null
+                    },
+                    verificationData: {
+                        deckCommitmentHash: deckReveal.deckCommitmentHash,
+                        dealingOrder: room.game.dealingOrder || null,
+                        dealingSeed: room.game.dealingSeed || null,
+                        isVerifiableShuffle: room.game.deck.isVerifiableShuffle,
+                        shuffleVersion: VerifiableShuffle.SHUFFLE_VERSION
+                    },
+                    verificationTranscript: verificationTranscript,
+                    timestamp: Date.now()
+                }
+            });
+        }
+
+        console.log(`🎉 Indian Poker showdown in room ${room.id}. Winner: ${result.winner.name} with ${result.handValue.name}`);
     }
 
     handleShowCards(clientId) {
