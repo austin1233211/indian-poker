@@ -48,7 +48,7 @@ const {
 // ZK Proofs Configuration
 const ZK_CONFIG = {
     enabled: process.env.ZK_PROOFS_ENABLED !== 'false', // Enabled by default
-    requireProofsForGameProgress: process.env.ZK_REQUIRE_PROOFS !== 'false', // Required by default
+    requireProofsForGameProgress: process.env.ZK_REQUIRE_PROOFS === 'true', // Optional by default, enable with ZK_REQUIRE_PROOFS=true
     proofTimeout: parseInt(process.env.ZK_PROOF_TIMEOUT) || 30000,
     verifyOnDeal: process.env.ZK_VERIFY_ON_DEAL !== 'false',
     verifyOnShuffle: process.env.ZK_VERIFY_ON_SHUFFLE !== 'false'
