@@ -201,7 +201,8 @@
             text-transform: uppercase; letter-spacing: 2px; margin-bottom: 15px;
         }
         .players-area { display: flex; justify-content: space-around; align-items: center; flex-wrap: wrap; gap: 20px; margin-top: 20px; }
-        .table-player { text-align: center; padding: 15px; min-width: 150px; }
+        .table-player { text-align: center; padding: 15px; min-width: 150px; border-radius: 10px; transition: box-shadow 0.3s; }
+        .table-player.active-turn { box-shadow: 0 0 12px 3px var(--accent-gold); }
         .table-player-name { font-weight: 600; font-size: 1.1rem; margin-bottom: 8px; color: var(--text-primary); }
         .table-player-name.you-label { color: var(--accent-primary); }
         .table-player-chips { font-size: 0.9rem; color: var(--accent-gold); margin-bottom: 10px; }
@@ -348,12 +349,13 @@
                     </div>
                 </div>
                 <div class="game-actions-bar slide-up">
+                    <div id="turnIndicator" class="turn-indicator" style="text-align:center;padding:8px;font-weight:bold;color:var(--accent-gold);display:none;"></div>
                     <div class="form-group">
                         <label class="form-label">Bet Amount</label>
                         <input type="number" id="betAmount" placeholder="Amount" value="50">
                     </div>
-                    <button class="btn btn-success" onclick="makeBet()">Bet</button>
-                    <button class="btn btn-danger" onclick="fold()">Fold</button>
+                    <button class="btn btn-success" id="betBtn" onclick="makeBet()">Bet</button>
+                    <button class="btn btn-danger" id="foldBtn" onclick="fold()">Fold</button>
                     <button class="btn btn-secondary" onclick="leaveRoom()">Leave Room</button>
                 </div>
             </div>
@@ -614,13 +616,19 @@
                         break;
 
                     case 'bet_made':
-                        this.log(message.data.playerName + ' bet ' + message.data.amount + ' chips', 'info');
+                        var betAction = message.data.action === 'raise' ? 'raised' : 'called';
+                        this.log(message.data.playerName + ' ' + betAction + ' ' + message.data.amount + ' chips', 'info');
                         if (message.data.gameState) { this.gameState = message.data.gameState; }
                         this.updateGameDisplay();
                         break;
 
                     case 'player_folded':
                         this.log(message.data.playerName + ' folded', 'info');
+                        if (message.data.gameState) { this.gameState = message.data.gameState; }
+                        this.updateGameDisplay();
+                        break;
+
+                    case 'turn_changed':
                         if (message.data.gameState) { this.gameState = message.data.gameState; }
                         this.updateGameDisplay();
                         break;
@@ -771,9 +779,11 @@
                 const playersArea = document.getElementById('playersArea');
                 let html = '';
                 const players = this.gameState.players || [];
+                const currentTurn = this.gameState.currentTurnPlayerId;
                 players.forEach(p => {
                     const isYou = p.id === this.clientId;
-                    html += '<div class="table-player">';
+                    const isTurn = p.id === currentTurn;
+                    html += '<div class="table-player' + (isTurn ? ' active-turn' : '') + '">';
                     html += '<div class="table-player-name ' + (isYou ? 'you-label' : '') + '">' + this.escapeHtml(p.name) + (isYou ? ' (You)' : '') + '</div>';
                     html += '<div class="table-player-chips">' + p.chips + ' chips</div>';
                     if (p.cards && p.cards.length > 0) {
@@ -786,9 +796,42 @@
                     }
                     if (p.bet > 0) { html += '<div class="table-player-bet">Bet: ' + p.bet + '</div>'; }
                     if (p.hasFolded) { html += '<div class="table-player-status">Folded</div>'; }
+                    if (isTurn && phase === 'betting') { html += '<div class="table-player-status" style="color:var(--accent-gold);">Their turn</div>'; }
                     html += '</div>';
                 });
                 playersArea.innerHTML = html;
+
+                // Update turn indicator and button states
+                const isMyTurn = currentTurn === this.clientId;
+                const turnIndicator = document.getElementById('turnIndicator');
+                const betBtn = document.getElementById('betBtn');
+                const foldBtn = document.getElementById('foldBtn');
+                if (phase === 'betting' && currentTurn) {
+                    turnIndicator.style.display = 'block';
+                    if (isMyTurn) {
+                        turnIndicator.textContent = 'Your turn!';
+                        turnIndicator.style.color = 'var(--accent-gold)';
+                        betBtn.disabled = false;
+                        foldBtn.disabled = false;
+                        betBtn.style.opacity = '1';
+                        foldBtn.style.opacity = '1';
+                    } else {
+                        var turnPlayerName = '';
+                        players.forEach(function(p) { if (p.id === currentTurn) turnPlayerName = p.name; });
+                        turnIndicator.textContent = 'Waiting for ' + turnPlayerName + '...';
+                        turnIndicator.style.color = 'var(--text-muted)';
+                        betBtn.disabled = true;
+                        foldBtn.disabled = true;
+                        betBtn.style.opacity = '0.5';
+                        foldBtn.style.opacity = '0.5';
+                    }
+                } else {
+                    turnIndicator.style.display = 'none';
+                    betBtn.disabled = false;
+                    foldBtn.disabled = false;
+                    betBtn.style.opacity = '1';
+                    foldBtn.style.opacity = '1';
+                }
             }
 
             resetRoomState() {
