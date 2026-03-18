@@ -1842,7 +1842,7 @@ class IndianPokerServer {
             this.ipRoomCreationCounts.set(client.ip, ipInfo);
         }
 
-        const { roomName } = data;
+        const { roomName, playerName, chips } = data;
 
         // SECURITY FIX: Enhanced room name sanitization (prevent XSS, Unicode attacks, and limit length)
         let sanitizedRoomName = null;
@@ -1861,6 +1861,27 @@ class IndianPokerServer {
         // Security: Track room creator for authorization
         room.creatorId = clientId;
 
+        // Auto-join creator to the room as a player
+        const sanitizedPlayerName = String(playerName || 'Player')
+            .normalize('NFKC')
+            .replace(/[<>\"'&`\\\/\x00-\x1f\x7f-\x9f]/g, '')
+            .replace(/[\u2028\u2029]/g, '')
+            .replace(/[\uFEFF\u200B-\u200D\uFFFE\uFFFF]/g, '')
+            .trim()
+            .substring(0, 20);
+
+        const MIN_CHIPS = 100;
+        const MAX_CHIPS = 10000;
+        const DEFAULT_CHIPS = 1000;
+        let validatedChips = DEFAULT_CHIPS;
+        if (typeof chips === 'number' && Number.isFinite(chips)) {
+            validatedChips = Math.floor(Math.min(Math.max(chips, MIN_CHIPS), MAX_CHIPS));
+        }
+
+        const player = this.roomManager.joinRoom(room.id, clientId, sanitizedPlayerName, validatedChips);
+        client.playerId = clientId;
+        client.roomId = room.id;
+
         this.sendMessage(clientId, {
             type: 'room_created',
             data: {
@@ -1868,14 +1889,20 @@ class IndianPokerServer {
                     id: room.id,
                     name: room.name,
                     variant: room.variant,
-                    playerCount: 0,
+                    playerCount: room.players.size,
                     maxPlayers: room.maxPlayers,
                     gameType: this.roomManager.getGameTypeDisplayName()
-                }
+                },
+                player: {
+                    id: player.id,
+                    name: player.name,
+                    chips: player.chips
+                },
+                gameState: room.game.getGameStateForClient(clientId)
             }
         });
 
-        console.log(`🏠 Room created: ${room.id} (Blind Man's Bluff)`);
+        console.log(`🏠 Room created: ${room.id} (Blind Man's Bluff) - ${sanitizedPlayerName} auto-joined`);
     }
 
     handleListRooms(clientId) {
