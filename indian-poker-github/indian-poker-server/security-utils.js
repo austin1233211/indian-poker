@@ -1692,7 +1692,8 @@ class AEADEncryption {
 class MessageEncryption {
     constructor(gameSecret, options = {}) {
         this.gameSecret = gameSecret || crypto.randomBytes(32).toString('hex');
-        this.sequenceNumbers = new Map(); // clientId -> sequence
+        this.outgoingSequenceNumbers = new Map(); // clientId -> outgoing sequence (server→client)
+        this.incomingSequenceNumbers = new Map(); // clientId -> incoming sequence (client→server)
         this.algorithm = 'aes-256-gcm';
         this.ivLength = 12; // 96 bits (recommended for GCM)
         this.tagLength = 16; // 128 bits
@@ -1755,9 +1756,9 @@ class MessageEncryption {
      * @returns {number} Next sequence number
      */
     getNextSequence(clientId) {
-        const current = this.sequenceNumbers.get(clientId) || 0;
+        const current = this.outgoingSequenceNumbers.get(clientId) || 0;
         const next = current + 1;
-        this.sequenceNumbers.set(clientId, next);
+        this.outgoingSequenceNumbers.set(clientId, next);
         return next;
     }
 
@@ -1768,11 +1769,11 @@ class MessageEncryption {
      * @returns {boolean} True if valid, false if replay detected
      */
     verifySequence(clientId, sequence) {
-        const expected = (this.sequenceNumbers.get(clientId) || 0) + 1;
-        if (sequence <= (this.sequenceNumbers.get(clientId) || 0)) {
+        const lastIncoming = this.incomingSequenceNumbers.get(clientId) || 0;
+        if (sequence <= lastIncoming) {
             return false; // Replay attack detected
         }
-        this.sequenceNumbers.set(clientId, sequence);
+        this.incomingSequenceNumbers.set(clientId, sequence);
         return true;
     }
 
@@ -1878,7 +1879,7 @@ class MessageEncryption {
      * @returns {number} Current sequence number
      */
     getClientSequence(clientId) {
-        return this.sequenceNumbers.get(clientId) || 0;
+        return this.outgoingSequenceNumbers.get(clientId) || 0;
     }
 
     /**
@@ -1886,7 +1887,8 @@ class MessageEncryption {
      * @param {string} clientId - Client identifier
      */
     resetClientSequence(clientId) {
-        this.sequenceNumbers.delete(clientId);
+        this.outgoingSequenceNumbers.delete(clientId);
+        this.incomingSequenceNumbers.delete(clientId);
     }
 
     /**
@@ -1894,7 +1896,8 @@ class MessageEncryption {
      * @param {string} clientId - Client identifier
      */
     cleanupClient(clientId) {
-        this.sequenceNumbers.delete(clientId);
+        this.outgoingSequenceNumbers.delete(clientId);
+        this.incomingSequenceNumbers.delete(clientId);
     }
 
     /**
