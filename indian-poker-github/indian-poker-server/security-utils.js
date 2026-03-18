@@ -3236,12 +3236,24 @@ class InputValidator {
             return { valid: false, errors: ['Encrypted message missing data field'], sanitized: null };
         }
 
-        // Validate that encrypted and signature fields exist and are strings
-        // but DO NOT sanitize them - they contain base64-encoded crypto data
-        if (typeof message.data.encrypted !== 'string') {
+        // Validate that encrypted field exists as an object (contains ciphertext, iv, authTag, etc.)
+        // and signature field exists as a string (hex-encoded HMAC)
+        // DO NOT sanitize them - they contain base64-encoded crypto data
+        if (!message.data.encrypted || typeof message.data.encrypted !== 'object') {
             errors.push('Missing or invalid encrypted field');
-        } else if (message.data.encrypted.length > 100000) {
-            errors.push('Encrypted data exceeds maximum length');
+        } else {
+            // Validate required sub-fields of the encrypted envelope
+            if (typeof message.data.encrypted.ciphertext !== 'string') {
+                errors.push('Missing or invalid ciphertext in encrypted field');
+            } else if (message.data.encrypted.ciphertext.length > 100000) {
+                errors.push('Encrypted data exceeds maximum length');
+            }
+            if (typeof message.data.encrypted.iv !== 'string') {
+                errors.push('Missing or invalid iv in encrypted field');
+            }
+            if (typeof message.data.encrypted.authTag !== 'string') {
+                errors.push('Missing or invalid authTag in encrypted field');
+            }
         }
 
         if (typeof message.data.signature !== 'string') {
