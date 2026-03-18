@@ -3263,36 +3263,21 @@ class IndianPokerServer {
             return;
         }
         
-        const gameId = room.game.gameId || room.id;
-        
         for (const [clientId, client] of this.clients) {
             if (client.roomId === room.id) {
                 const personalizedState = room.game.getGameStateForClient(clientId);
-                const securityEnabled = this.clientSecurityEnabled.get(clientId);
                 
-                if (securityEnabled && securityEnabled.encryptionEnabled) {
-                    const encryptedGameState = this.messageEncryption.encryptPersonalizedGameState(
-                        gameId,
-                        clientId,
-                        personalizedState
-                    );
-                    
-                    this.sendMessage(clientId, {
-                        type: messageType,
-                        data: {
-                            ...additionalData,
-                            encryptedGameState: encryptedGameState
-                        }
-                    });
-                } else {
-                    this.sendMessage(clientId, {
-                        type: messageType,
-                        data: {
-                            ...additionalData,
-                            gameState: personalizedState
-                        }
-                    });
-                }
+                // Always send as gameState — transport-level encryption is handled by sendMessage.
+                // Each player already receives their own personalized view (Indian Poker mechanic),
+                // so additional per-field encryption is redundant and breaks the frontend which
+                // expects message.data.gameState.
+                this.sendMessage(clientId, {
+                    type: messageType,
+                    data: {
+                        ...additionalData,
+                        gameState: personalizedState
+                    }
+                });
             }
         }
     }
