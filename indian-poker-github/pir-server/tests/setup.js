@@ -24,12 +24,14 @@ global.console = {
 };
 
 // Mock fetch for Node.js environment
-if (!global.fetch) {
-  global.fetch = jest.fn();
-}
+// Always mock fetch to ensure Jest compatibility (Node 18+ has native fetch)
+const originalFetch = global.fetch;
+global.fetch = jest.fn();
 
-// Mock timers
-jest.useFakeTimers();
+// Note: We don't use fake timers globally because they interfere with
+// async operations like bcrypt that use setImmediate internally.
+// Tests that need fake timers should enable them locally with jest.useFakeTimers()
+// and restore with jest.useRealTimers() in afterEach.
 
 // Global test utilities
 global.testUtils = {
@@ -87,7 +89,6 @@ global.testUtils = {
   // Clean up mocks
   cleanup: () => {
     jest.clearAllMocks();
-    jest.clearAllTimers();
   }
 };
 
@@ -145,4 +146,6 @@ afterEach(() => {
 afterAll(() => {
   // Cleanup after all tests
   jest.restoreAllMocks();
+  // Restore original fetch (jest.restoreAllMocks doesn't restore manual assignments)
+  global.fetch = originalFetch;
 });

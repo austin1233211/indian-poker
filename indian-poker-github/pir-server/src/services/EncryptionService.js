@@ -336,7 +336,7 @@ class EncryptionService {
    * @param {object} parameters - Query parameters
    * @returns {object} PIR query
    */
-  generatePIRQuery(queryType, parameters) {
+  generatePIRQuery(queryType, parameters = {}) {
     const timestamp = Date.now();
     const nonce = this.generateRandomString(16);
     
